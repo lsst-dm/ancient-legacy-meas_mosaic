@@ -13,10 +13,10 @@
 
 using namespace lsst::meas::mosaic;
 
-#if defined(USE_GSL)
-#include <gsl/gsl_linalg.h>
-#else
+#ifdef USE_MKL
 #include <mkl_lapack.h>
+#else
+#include <gsl/gsl_linalg.h>
 #endif
 double* solveMatrix(long size, double *a_data, double *b_data);
 
@@ -1088,22 +1088,7 @@ double calEta_D(double a, double d, double A, double D) {
     return -pow(cos(D)*sin(d)-sin(D)*cos(d)*cos(a-A),2.)/pow(sin(D)*sin(d)+cos(D)*cos(d)*cos(a-A),2.)-1.;
 }
 
-#if defined(USE_GSL)
-double* solveMatrix_GSL(long size, double *a_data, double *b_data) {
-    gsl_matrix_view a = gsl_matrix_view_array(a_data, size, size);
-    gsl_vector_view b = gsl_vector_view_array(b_data, size);
-    double *c_data = new double[size];
-    gsl_vector_view c = gsl_vector_view_array(c_data, size);
-
-    int s;
-    gsl_permutation *p = gsl_permutation_alloc(size);
-    gsl_linalg_LU_decomp(&a.matrix, p, &s);
-    gsl_linalg_LU_solve(&a.matrix, p, &b.vector, &c.vector);
-    gsl_permutation_free(p);
-
-    return c_data;
-}
-#else
+#ifdef USE_MKL
 double* solveMatrix_MKL(long size, double *a_data, double *b_data) {
     //char L = 'L';
     MKL_INT n = size;
@@ -1133,13 +1118,28 @@ double* solveMatrix_MKL(long size, double *a_data, double *b_data) {
 
     return c_data;
 }
+#else
+double* solveMatrix_GSL(long size, double *a_data, double *b_data) {
+    gsl_matrix_view a = gsl_matrix_view_array(a_data, size, size);
+    gsl_vector_view b = gsl_vector_view_array(b_data, size);
+    double *c_data = new double[size];
+    gsl_vector_view c = gsl_vector_view_array(c_data, size);
+
+    int s;
+    gsl_permutation *p = gsl_permutation_alloc(size);
+    gsl_linalg_LU_decomp(&a.matrix, p, &s);
+    gsl_linalg_LU_solve(&a.matrix, p, &b.vector, &c.vector);
+    gsl_permutation_free(p);
+
+    return c_data;
+}
 #endif
 
 double* solveMatrix(long size, double *a_data, double *b_data) {
-#if defined(USE_GSL)
-    return solveMatrix_GSL(size, a_data, b_data);
-#else
+#ifdef USE_MKL
     return solveMatrix_MKL(size, a_data, b_data);
+#else
+    return solveMatrix_GSL(size, a_data, b_data);
 #endif
 }
     
