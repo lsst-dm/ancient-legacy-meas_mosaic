@@ -16,7 +16,8 @@ using namespace lsst::meas::mosaic;
 #ifdef USE_MKL
 #include <mkl_lapack.h>
 #else
-#include <gsl/gsl_linalg.h>
+#include "Eigen/Core"
+#include "Eigen/LU"
 #endif
 double* solveMatrix(long size, double *a_data, double *b_data);
 
@@ -1119,18 +1120,13 @@ double* solveMatrix_MKL(long size, double *a_data, double *b_data) {
     return c_data;
 }
 #else
-double* solveMatrix_GSL(long size, double *a_data, double *b_data) {
-    gsl_matrix_view a = gsl_matrix_view_array(a_data, size, size);
-    gsl_vector_view b = gsl_vector_view_array(b_data, size);
+double* solveMatrix_Eigen(long size, double *a_data, double *b_data) {
+    Eigen::Map<Eigen::MatrixXd> a(a_data, size, size);
+    Eigen::Map<Eigen::VectorXd> b(b_data, size);
     double *c_data = new double[size];
-    gsl_vector_view c = gsl_vector_view_array(c_data, size);
-
-    int s;
-    gsl_permutation *p = gsl_permutation_alloc(size);
-    gsl_linalg_LU_decomp(&a.matrix, p, &s);
-    gsl_linalg_LU_solve(&a.matrix, p, &b.vector, &c.vector);
-    gsl_permutation_free(p);
-
+    Eigen::Map<Eigen::VectorXd> c(c_data, size);
+    Eigen::PartialPivLU<Eigen::MatrixXd> lu(a);
+    c = lu.solve(b);
     return c_data;
 }
 #endif
@@ -1139,7 +1135,7 @@ double* solveMatrix(long size, double *a_data, double *b_data) {
 #ifdef USE_MKL
     return solveMatrix_MKL(size, a_data, b_data);
 #else
-    return solveMatrix_GSL(size, a_data, b_data);
+    return solveMatrix_Eigen(size, a_data, b_data);
 #endif
 }
     
