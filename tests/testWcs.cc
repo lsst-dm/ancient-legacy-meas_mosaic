@@ -1,5 +1,5 @@
-#include <stdio.h>
-#include <math.h>
+#include <cstdio>
+#include <cmath>
 #include <vector>
 #include <lsst/afw/image/Wcs.h>
 #include <lsst/afw/image/Exposure.h>
@@ -50,7 +50,12 @@ int main(int argc, char **argv)
 	sscanf(buf, "%d %lf %lf %lf", &k, &x, &y, &t);
 	lsst::afw::geom::PointD center = 
 	    lsst::afw::geom::Point2D(x, y);
-	lsst::afw::cameraGeom::Orientation orientation(0, 0.0, 0.0, t);
+	lsst::afw::cameraGeom::Orientation orientation(
+        0,
+        0.0 * lsst::afw::geom::degrees, 
+        0.0 * lsst::afw::geom::degrees,
+        t * lsst::afw::geom::degrees
+    );
 	lsst::afw::cameraGeom::Ccd::Ptr ccd = lsst::afw::cameraGeom::Ccd::Ptr(new lsst::afw::cameraGeom::Ccd(k, 0.168));
 	ccd->setCenter(lsst::afw::cameraGeom::FpPoint(center));
 	ccd->setOrientation(orientation);
@@ -68,7 +73,7 @@ int main(int argc, char **argv)
 
 	    lsst::afw::coord::Coord::Ptr cp = wcs->pixelToSky(2000, 4000);
 	    std::cout << cp->getLongitude().asDegrees() << " " << cp->getLatitude().asDegrees() << std::endl;
-	    lsst::afw::geom::PointD pt = wcs->skyToPixel(cp);
+	    lsst::afw::geom::PointD pt = wcs->skyToPixel(*cp);
 	    std::cout << pt[0] << " " << pt[1] << std::endl;
 
 	    char fname[BUFSIZ];

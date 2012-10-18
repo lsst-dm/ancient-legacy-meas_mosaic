@@ -15,4 +15,5 @@ doc/doxygen.conf
 tests/.tests
 tests/gslhang
 tests/mklworks
+tests/testWcs
 version.py

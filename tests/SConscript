@@ -1,7 +1,8 @@
 # -*- python -*-
 from lsst.sconsUtils import scripts, env, state
 ccTests = ["testWcs.cc", "mklworks.cc", "gslhang.cc"]
+ignoreList = ["testWcs"]
 if not env.dependencies["mkl"]:
     state.log.warn("mkl not found; not running mklworks test")
     ccTests.remove("mklworks.cc")
-scripts.BasicSConscript.tests(ccList=ccTests)
+scripts.BasicSConscript.tests(ccList=ccTests, ignoreList=ignoreList)
