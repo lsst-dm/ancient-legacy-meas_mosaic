@@ -181,13 +181,13 @@ def readCatalog(butler, frameIds, ccdIds, ct=None):
                     if numpy.isfinite(s.getRa().asDegrees()): # get rid of NaN
                         src = measMosaic.Source(s)
                         src.setExp(frameIds.index(frameId))
-                        src.setChip(ccdId)
+                        src.setChip(ccdIds.index(ccdId))
                         ss.append(src)
                 for m in matches:
                     if m.first != None and m.second != None:
                         match = measMosaic.SourceMatch(measMosaic.Source(m.first, wcs), measMosaic.Source(m.second))
                         match.second.setExp(frameIds.index(frameId))
-                        match.second.setChip(ccdId)
+                        match.second.setChip(ccdIds.index(ccdId))
                         ml.append(match)
         sourceSet.push_back(ss)
         matchList.push_back(ml)
