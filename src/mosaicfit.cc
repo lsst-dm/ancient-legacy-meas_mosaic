@@ -19,11 +19,84 @@ using namespace lsst::meas::mosaic;
 #include "Eigen/Core"
 #include "Eigen/LU"
 #endif
-double* solveMatrix(long size, double *a_data, double *b_data);
 
-static void decodeSipHeader(CONST_PTR(lsst::daf::base::PropertySet) const& fitsMetadata,
-                            std::string const& which,
-                            Eigen::MatrixXd *m);
+namespace lsst { namespace meas { namespace mosaic {
+
+namespace {
+
+#ifdef USE_MKL
+double* solveMatrix_MKL(long size, double *a_data, double *b_data) {
+    //char L = 'L';
+    MKL_INT n = size;
+    MKL_INT nrhs = 1;
+    MKL_INT lda = size;
+    MKL_INT *ipiv = new MKL_INT[size];
+    MKL_INT ldb = size;
+    MKL_INT info = 0;
+
+    //double *a = new double[size*size];
+    //double *b = new double[size];
+
+    //memcpy(a, a_data, sizeof(double)*size*size);
+    //memcpy(b, b_data, sizeof(double)*size);
+
+    //dgesv(&n, &nrhs, a, &lda, ipiv, b, &ldb, &info);
+    dgesv(&n, &nrhs, a_data, &lda, ipiv, b_data, &ldb, &info);
+    //dposv(&L, &n, &nrhs, a, &lda, b, &ldb, &info);
+
+    double *c_data = new double[size];
+    //memcpy(c_data, b, sizeof(double)*size);
+    memcpy(c_data, b_data, sizeof(double)*size);
+
+    delete [] ipiv;
+    //delete [] a;
+    //delete [] b;
+
+    return c_data;
+}
+#else
+double* solveMatrix_Eigen(long size, double *a_data, double *b_data) {
+    Eigen::Map<Eigen::MatrixXd> a(a_data, size, size);
+    Eigen::Map<Eigen::VectorXd> b(b_data, size);
+    double *c_data = new double[size];
+    Eigen::Map<Eigen::VectorXd> c(c_data, size);
+    Eigen::PartialPivLU<Eigen::MatrixXd> lu(a);
+    c = lu.solve(b);
+    return c_data;
+}
+#endif
+
+double* solveMatrix(long size, double *a_data, double *b_data) {
+#ifdef USE_MKL
+    return solveMatrix_MKL(size, a_data, b_data);
+#else
+    return solveMatrix_Eigen(size, a_data, b_data);
+#endif
+}
+
+// FIXME: wholesale copied from afw::image::TanWcs.cc; should expose that instead.
+void decodeSipHeader(CONST_PTR(daf::base::PropertySet) const& fitsMetadata,
+                     std::string const& which,
+                     Eigen::MatrixXd *m) {
+    std::string header = which + "_ORDER";
+    if (!fitsMetadata->exists(header)) return;
+    int order = fitsMetadata->getAsInt(header);
+    m->resize(order + 1, order + 1);
+    boost::format format("%1%_%2%_%3%");
+    for (int i = 0; i <= order; ++i) {
+        for (int j = 0; j <= order; ++j) {
+            header = (format % which % i % j).str();
+            if (fitsMetadata->exists(header)) {
+                (*m)(i,j) = fitsMetadata->getAsDouble(header);
+            }
+            else {
+                (*m)(i, j) = 0.0;
+            }
+        }
+    }
+}
+
+} // anonymous
 
 
 double calXi(double a, double d, double A, double D);
@@ -303,10 +376,10 @@ Obs::Obs(int id_, double ra_, double dec_, int ichip_, int iexp_) :
     mag_cat(std::numeric_limits<double>::quiet_NaN())
 {}
 
-void Obs::setUV(lsst::afw::cameraGeom::Ccd::Ptr const &ccd, double x0, double y0) {
-    lsst::afw::geom::PointD  center = ccd->getCenter().getPixels(1.0);
+void Obs::setUV(afw::cameraGeom::Ccd::Ptr const &ccd, double x0, double y0) {
+    afw::geom::PointD  center = ccd->getCenter().getPixels(1.0);
 
-    lsst::afw::cameraGeom::Orientation ori = ccd->getOrientation();
+    afw::cameraGeom::Orientation ori = ccd->getOrientation();
     double cosYaw = ori.getCosYaw();
     double sinYaw = ori.getSinYaw();
 
@@ -379,7 +452,7 @@ FluxFitParams::FluxFitParams(int order_, bool absolute_, bool chebyshev_) :
     assert(k == ncoeff);
 }
 
-FluxFitParams::FluxFitParams(lsst::daf::base::PropertySet::Ptr& metadata) :
+FluxFitParams::FluxFitParams(daf::base::PropertySet::Ptr& metadata) :
     order(metadata->getAsInt("ORDER")),
     chebyshev(metadata->getAsBool("CHEBYSHEV")),
     ncoeff((order+1) * (order+2) / 2),
@@ -551,7 +624,7 @@ void KDTree::_initializeSources(SourceSet& s, int depth)
 
 	this->location[0] = s[0]->getRa();
 	this->location[1] = s[0]->getDec();
-	this->c = lsst::afw::coord::Coord(this->location[0], this->location[1]);
+	this->c = afw::coord::Coord(this->location[0], this->location[1]);
 	this->set.push_back(s[0]);
 
 	this->left  = KDTree::Ptr();
@@ -566,7 +639,7 @@ void KDTree::_initializeSources(SourceSet& s, int depth)
 
 	this->location[0] = s[s.size()/2]->getRa();
 	this->location[1] = s[s.size()/2]->getDec();
-	this->c = lsst::afw::coord::Coord(this->location[0], this->location[1]);
+	this->c = afw::coord::Coord(this->location[0], this->location[1]);
 
 	this->set.push_back(s[s.size()/2]);
 
@@ -598,7 +671,7 @@ void KDTree::_initializeMatches(SourceMatchSet &m, int depth) {
 
 	this->location[0] = m[0].first->getRa();
 	this->location[1] = m[0].first->getDec();
-	this->c = lsst::afw::coord::Coord(this->location[0], this->location[1]);
+	this->c = afw::coord::Coord(this->location[0], this->location[1]);
 
 	this->set.push_back(m[0].first);
 	this->set.push_back(m[0].second);
@@ -617,7 +690,7 @@ void KDTree::_initializeMatches(SourceMatchSet &m, int depth) {
 
 	this->location[0] = m[middle].first->getRa();
 	this->location[1] = m[middle].first->getDec();
-	this->c = lsst::afw::coord::Coord(this->location[0], this->location[1]);
+	this->c = afw::coord::Coord(this->location[0], this->location[1]);
 
 	this->set.push_back(m[middle].first);
 	this->set.push_back(m[middle].second);
@@ -650,12 +723,12 @@ KDTree::~KDTree() {
     }
 }
 
-KDTree::ConstPtr KDTree::search(lsst::afw::coord::Coord const& sky) const {
+KDTree::ConstPtr KDTree::search(afw::coord::Coord const& sky) const {
 
-    lsst::afw::geom::Angle ra  = sky.getLongitude();
-    lsst::afw::geom::Angle dec = sky.getLatitude();
+    afw::geom::Angle ra  = sky.getLongitude();
+    afw::geom::Angle dec = sky.getLatitude();
 
-    lsst::afw::geom::Angle val;
+    afw::geom::Angle val;
     if (this->axis == 0)
 	val = ra;
     else
@@ -683,10 +756,10 @@ KDTree::ConstPtr KDTree::search(lsst::afw::coord::Coord const& sky) const {
 
 void KDTree::add(SourceMatch const& m) {
 
-    lsst::afw::geom::Angle ra  = m.first->getRa();
-    lsst::afw::geom::Angle dec = m.first->getDec();
+    afw::geom::Angle ra  = m.first->getRa();
+    afw::geom::Angle dec = m.first->getDec();
 
-    lsst::afw::geom::Angle val;
+    afw::geom::Angle val;
     if (this->axis == 0)
 	val = ra;
     else
@@ -726,16 +799,16 @@ int KDTree::count(void) {
 
 KDTree::ConstPtr KDTree::findSource(Source const& s) const {
 
-    lsst::afw::geom::Angle ra  = s.getRa();
-    lsst::afw::geom::Angle dec = s.getDec();
+    afw::geom::Angle ra  = s.getRa();
+    afw::geom::Angle dec = s.getDec();
 
-    lsst::afw::geom::Angle val;
+    afw::geom::Angle val;
     if (this->axis == 0)
 	val = ra;
     else
 	val = dec;
 
-    lsst::afw::coord::Coord coord(s.getRa(), s.getDec());
+    afw::coord::Coord coord(s.getRa(), s.getDec());
     for (size_t i = 0; i < this->set.size(); i++) {
         // Previous code compared x,y, but those aren't available always now so using RA,Dec.
         // Is this too slow?
@@ -767,7 +840,7 @@ KDTree::Ptr KDTree::findNearest(Source const& s) {
     }
 
     KDTree::Ptr leaf;
-    lsst::afw::geom::Angle val;
+    afw::geom::Angle val;
     if (this->axis == 0) {
 	val = s.getRa();
     } else {
@@ -828,9 +901,9 @@ KDTree::Ptr KDTree::findNearest(Source const& s) {
     }
 }
 
-void KDTree::add(PTR(Source) s, lsst::afw::geom::Angle d_lim) {
-    lsst::afw::geom::Angle ra  = s->getRa();
-    lsst::afw::geom::Angle dec = s->getDec();
+void KDTree::add(PTR(Source) s, afw::geom::Angle d_lim) {
+    afw::geom::Angle ra  = s->getRa();
+    afw::geom::Angle dec = s->getDec();
 
     if (d_lim <= 0) {
         for (size_t i = 0; i < this->set.size(); i++) {
@@ -899,8 +972,8 @@ SourceGroup KDTree::mergeSource() {
 	double ra  = sr / sn;
 	double dec = sd / sn;
 	double mag = sm / sn;
-        PTR(Source) source(new Source(lsst::afw::coord::Coord(lsst::afw::geom::Point2D(ra, dec),
-                                                              lsst::afw::geom::degrees), mag));
+        PTR(Source) source(new Source(afw::coord::Coord(afw::geom::Point2D(ra, dec),
+                                                              afw::geom::degrees), mag));
         this->set.insert(set.begin(), source);
 	sg.push_back(this->set);
     }
@@ -961,7 +1034,7 @@ void KDTree::printSource() const {
 }
 
 KDTree::Ptr
-lsst::meas::mosaic::kdtreeMat(SourceMatchGroup &matchList) {
+kdtreeMat(SourceMatchGroup &matchList) {
 
     KDTree::Ptr root = KDTree::Ptr(new KDTree(matchList[0], 0));
     //std::cout << "root->count() : " << root->count() << std::endl;
@@ -979,10 +1052,10 @@ lsst::meas::mosaic::kdtreeMat(SourceMatchGroup &matchList) {
 }
 
 KDTree::Ptr
-lsst::meas::mosaic::kdtreeSource(SourceGroup const &sourceSet,
+kdtreeSource(SourceGroup const &sourceSet,
 				KDTree::Ptr rootMat,
 				int nchip,
-				lsst::afw::geom::Angle d_lim, unsigned int nbrightest) {
+				afw::geom::Angle d_lim, unsigned int nbrightest) {
     double fluxlim[sourceSet.size()*nchip];
 
     for (size_t j = 0; j < sourceSet.size(); j++) {
@@ -1088,58 +1161,7 @@ double calEta_A(double a, double d, double A, double D) {
 double calEta_D(double a, double d, double A, double D) {
     return -pow(cos(D)*sin(d)-sin(D)*cos(d)*cos(a-A),2.)/pow(sin(D)*sin(d)+cos(D)*cos(d)*cos(a-A),2.)-1.;
 }
-
-#ifdef USE_MKL
-double* solveMatrix_MKL(long size, double *a_data, double *b_data) {
-    //char L = 'L';
-    MKL_INT n = size;
-    MKL_INT nrhs = 1;
-    MKL_INT lda = size;
-    MKL_INT *ipiv = new MKL_INT[size];
-    MKL_INT ldb = size;
-    MKL_INT info = 0;
-
-    //double *a = new double[size*size];
-    //double *b = new double[size];
-
-    //memcpy(a, a_data, sizeof(double)*size*size);
-    //memcpy(b, b_data, sizeof(double)*size);
-
-    //dgesv(&n, &nrhs, a, &lda, ipiv, b, &ldb, &info);
-    dgesv(&n, &nrhs, a_data, &lda, ipiv, b_data, &ldb, &info);
-    //dposv(&L, &n, &nrhs, a, &lda, b, &ldb, &info);
-
-    double *c_data = new double[size];
-    //memcpy(c_data, b, sizeof(double)*size);
-    memcpy(c_data, b_data, sizeof(double)*size);
-
-    delete [] ipiv;
-    //delete [] a;
-    //delete [] b;
-
-    return c_data;
-}
-#else
-double* solveMatrix_Eigen(long size, double *a_data, double *b_data) {
-    Eigen::Map<Eigen::MatrixXd> a(a_data, size, size);
-    Eigen::Map<Eigen::VectorXd> b(b_data, size);
-    double *c_data = new double[size];
-    Eigen::Map<Eigen::VectorXd> c(c_data, size);
-    Eigen::PartialPivLU<Eigen::MatrixXd> lu(a);
-    c = lu.solve(b);
-    return c_data;
-}
-#endif
-
-double* solveMatrix(long size, double *a_data, double *b_data) {
-#ifdef USE_MKL
-    return solveMatrix_MKL(size, a_data, b_data);
-#else
-    return solveMatrix_Eigen(size, a_data, b_data);
-#endif
-}
     
-
 double* solveForCoeff(std::vector<Obs::Ptr>& objList, Poly::Ptr p) {
     int ncoeff = p->ncoeff;
     int size = 2 * ncoeff + 2;
@@ -2552,7 +2574,7 @@ double calcChi2_Star(std::vector<Obs::Ptr>& o, std::vector<Obs::Ptr>& s, CoeffSe
 }
 
 ObsVec
-lsst::meas::mosaic::obsVecFromSourceGroup(SourceGroup const &all,
+obsVecFromSourceGroup(SourceGroup const &all,
 					 WcsDic &wcsDic,
 					 CcdSet &ccdSet)
 {
@@ -2578,8 +2600,8 @@ lsst::meas::mosaic::obsVecFromSourceGroup(SourceGroup const &all,
 	    Obs::Ptr o = Obs::Ptr(new Obs(id, ra, dec, x, y, ichip, iexp));
 	    o->mag_cat = mag_cat;
 	    o->mag0 = mag_cat;
-	    lsst::afw::geom::PointD crval
-		= wcsDic[iexp]->getSkyOrigin()->getPosition(lsst::afw::geom::radians);
+	    afw::geom::PointD crval
+		= wcsDic[iexp]->getSkyOrigin()->getPosition(afw::geom::radians);
 	    o->setXiEta(crval[0], crval[1]);
 	    o->setUV(ccdSet[ichip]);
 	    o->istar = i;
@@ -2908,8 +2930,8 @@ initialFit(int nexp,
 	    c->a[k] = a[k];
 	    c->b[k] = a[k+p->ncoeff];
 	}
-	lsst::afw::geom::PointD crval
-	    = wcsDic[i]->getSkyOrigin()->getPosition(lsst::afw::geom::radians);
+	afw::geom::PointD crval
+	    = wcsDic[i]->getSkyOrigin()->getPosition(afw::geom::radians);
 	c->A = crval[0] + a[p->ncoeff*2];
 	c->D = crval[1] + a[p->ncoeff*2+1];
 	c->x0 = c->y0 = 0.0;
@@ -2986,7 +3008,7 @@ initialFit(int nexp,
 }
 
 CoeffSet
-lsst::meas::mosaic::solveMosaic_CCD_shot(int order,
+solveMosaic_CCD_shot(int order,
 					int nmatch,
 					ObsVec &matchVec,
 					WcsDic &wcsDic,
@@ -3033,25 +3055,25 @@ lsst::meas::mosaic::solveMosaic_CCD_shot(int order,
 
 	if (allowRotation) {
 	    for (int i = 0; i < nchip; i++) {
-		lsst::afw::geom::PointD center = ccdSet[i]->getCenter().getPixels(1.0);
-		lsst::afw::geom::PointD offset =
-		    lsst::afw::geom::Point2D(center[0]+coeff[2*ncoeff*nexp+3*i],
+		afw::geom::PointD center = ccdSet[i]->getCenter().getPixels(1.0);
+		afw::geom::PointD offset =
+		    afw::geom::Point2D(center[0]+coeff[2*ncoeff*nexp+3*i],
 					     center[1]+coeff[2*ncoeff*nexp+3*i+1]);
-		ccdSet[i]->setCenter(lsst::afw::cameraGeom::FpPoint(offset));
-		lsst::afw::cameraGeom::Orientation o = ccdSet[i]->getOrientation();
-		lsst::afw::cameraGeom::Orientation o2(o.getNQuarter(),
+		ccdSet[i]->setCenter(afw::cameraGeom::FpPoint(offset));
+		afw::cameraGeom::Orientation o = ccdSet[i]->getOrientation();
+		afw::cameraGeom::Orientation o2(o.getNQuarter(),
 						      o.getPitch(),
 						      o.getRoll(),
-                              o.getYaw() + coeff[2*ncoeff*nexp+3*i+2] * lsst::afw::geom::radians);
+                              o.getYaw() + coeff[2*ncoeff*nexp+3*i+2] * afw::geom::radians);
 		ccdSet[i]->setOrientation(o2);
 	    }
 	} else {
 	    for (int i = 0; i < nchip; i++) {
-		lsst::afw::geom::PointD center = ccdSet[i]->getCenter().getPixels(1.0);
-		lsst::afw::geom::PointD offset =
-		    lsst::afw::geom::Point2D(center[0]+coeff[2*ncoeff*nexp+2*i],
+		afw::geom::PointD center = ccdSet[i]->getCenter().getPixels(1.0);
+		afw::geom::PointD offset =
+		    afw::geom::Point2D(center[0]+coeff[2*ncoeff*nexp+2*i],
 					     center[1]+coeff[2*ncoeff*nexp+2*i+1]);
-		ccdSet[i]->setCenter(lsst::afw::cameraGeom::FpPoint(offset));
+		ccdSet[i]->setCenter(afw::cameraGeom::FpPoint(offset));
 	    }
 	}
 
@@ -3115,7 +3137,7 @@ lsst::meas::mosaic::solveMosaic_CCD_shot(int order,
 }
 
 CoeffSet
-lsst::meas::mosaic::solveMosaic_CCD(int order,
+solveMosaic_CCD(int order,
 				   int nmatch,
 				   int nsource,
 				   ObsVec &matchVec,
@@ -3183,25 +3205,25 @@ lsst::meas::mosaic::solveMosaic_CCD(int order,
 
 	if (allowRotation) {
 	    for (int i = 0; i < nchip; i++) {
-		lsst::afw::geom::PointD center = ccdSet[i]->getCenter().getPixels(1.0);
-		lsst::afw::geom::PointD offset =
-		    lsst::afw::geom::Point2D(center[0]+coeff[2*ncoeff*nexp+3*i],
+		afw::geom::PointD center = ccdSet[i]->getCenter().getPixels(1.0);
+		afw::geom::PointD offset =
+		    afw::geom::Point2D(center[0]+coeff[2*ncoeff*nexp+3*i],
 					     center[1]+coeff[2*ncoeff*nexp+3*i+1]);
-		ccdSet[i]->setCenter(lsst::afw::cameraGeom::FpPoint(offset));
-		lsst::afw::cameraGeom::Orientation o = ccdSet[i]->getOrientation();
-		lsst::afw::cameraGeom::Orientation o2(o.getNQuarter(),
+		ccdSet[i]->setCenter(afw::cameraGeom::FpPoint(offset));
+		afw::cameraGeom::Orientation o = ccdSet[i]->getOrientation();
+		afw::cameraGeom::Orientation o2(o.getNQuarter(),
 						      o.getPitch(),
 						      o.getRoll(),
-						      o.getYaw() + coeff[2*ncoeff*nexp+3*i+2] * lsst::afw::geom::radians);
+						      o.getYaw() + coeff[2*ncoeff*nexp+3*i+2] * afw::geom::radians);
 		ccdSet[i]->setOrientation(o2);
 	    }
 	} else {
 	    for (int i = 0; i < nchip; i++) {
-		lsst::afw::geom::PointD center = ccdSet[i]->getCenter().getPixels(1.0);
-		lsst::afw::geom::PointD offset =
-		    lsst::afw::geom::Point2D(center[0]+coeff[2*ncoeff*nexp+2*i],
+		afw::geom::PointD center = ccdSet[i]->getCenter().getPixels(1.0);
+		afw::geom::PointD offset =
+		    afw::geom::Point2D(center[0]+coeff[2*ncoeff*nexp+2*i],
 					     center[1]+coeff[2*ncoeff*nexp+2*i+1]);
-		ccdSet[i]->setCenter(lsst::afw::cameraGeom::FpPoint(offset));
+		ccdSet[i]->setCenter(afw::cameraGeom::FpPoint(offset));
 	    }
 	}
 
@@ -3325,7 +3347,7 @@ int binomial(int n, int k)
 }
 
 Coeff::Ptr
-lsst::meas::mosaic::convertCoeff(Coeff::Ptr& coeff, lsst::afw::cameraGeom::Ccd::Ptr& ccd)
+convertCoeff(Coeff::Ptr& coeff, afw::cameraGeom::Ccd::Ptr& ccd)
 {
     Poly::Ptr p = Poly::Ptr(new Poly(coeff->p->order));
     Coeff::Ptr newC = Coeff::Ptr(new Coeff(p));
@@ -3333,7 +3355,7 @@ lsst::meas::mosaic::convertCoeff(Coeff::Ptr& coeff, lsst::afw::cameraGeom::Ccd::
     int *xorder = p->xorder;
     int *yorder = p->yorder;
 
-    lsst::afw::cameraGeom::Orientation ori = ccd->getOrientation();
+    afw::cameraGeom::Orientation ori = ccd->getOrientation();
     double cosYaw = ori.getCosYaw();
     double sinYaw = ori.getSinYaw();
 
@@ -3361,7 +3383,7 @@ lsst::meas::mosaic::convertCoeff(Coeff::Ptr& coeff, lsst::afw::cameraGeom::Ccd::
 	}
     }
 
-    lsst::afw::geom::PointD off = ccd->getCenter().getPixels(1.0);
+    afw::geom::PointD off = ccd->getCenter().getPixels(1.0);
     newC->x0 =  (off[0] + coeff->x0) * cosYaw + (off[1] + coeff->y0) * sinYaw;
     newC->y0 = -(off[0] + coeff->x0) * sinYaw + (off[1] + coeff->y0) * cosYaw;
 
@@ -3423,7 +3445,7 @@ lsst::meas::mosaic::convertCoeff(Coeff::Ptr& coeff, lsst::afw::cameraGeom::Ccd::
 }
 
 FluxFitParams::Ptr
-lsst::meas::mosaic::convertFluxFitParams(Coeff::Ptr& coeff, lsst::afw::cameraGeom::Ccd::Ptr& ccd, FluxFitParams::Ptr& ffp)
+convertFluxFitParams(Coeff::Ptr& coeff, afw::cameraGeom::Ccd::Ptr& ccd, FluxFitParams::Ptr& ffp)
 {
     FluxFitParams::Ptr newP = FluxFitParams::Ptr(new FluxFitParams(ffp->order, ffp->chebyshev));
     newP->u_max = 1.0;
@@ -3432,7 +3454,7 @@ lsst::meas::mosaic::convertFluxFitParams(Coeff::Ptr& coeff, lsst::afw::cameraGeo
     int *xorder = ffp->xorder;
     int *yorder = ffp->yorder;
 
-    lsst::afw::cameraGeom::Orientation ori = ccd->getOrientation();
+    afw::cameraGeom::Orientation ori = ccd->getOrientation();
     double cosYaw = ori.getCosYaw();
     double sinYaw = ori.getSinYaw();
 
@@ -3458,21 +3480,21 @@ lsst::meas::mosaic::convertFluxFitParams(Coeff::Ptr& coeff, lsst::afw::cameraGeo
 	}
     }
 
-    lsst::afw::geom::PointD off = ccd->getCenter().getPixels(1.0);
+    afw::geom::PointD off = ccd->getCenter().getPixels(1.0);
     newP->x0 =  (off[0] + coeff->x0) * cosYaw + (off[1] + coeff->y0) * sinYaw;
     newP->y0 = -(off[0] + coeff->x0) * sinYaw + (off[1] + coeff->y0) * cosYaw;
 
     return newP;
 }
 
-lsst::afw::image::TanWcs::Ptr
-lsst::meas::mosaic::wcsFromCoeff(Coeff::Ptr& coeff)
+afw::image::TanWcs::Ptr
+wcsFromCoeff(Coeff::Ptr& coeff)
 {
     int order = coeff->p->order;
 
-    lsst::afw::geom::PointD crval
-	= lsst::afw::geom::Point2D(coeff->A*R2D, coeff->D*R2D);
-    lsst::afw::geom::PointD crpix = lsst::afw::geom::Point2D(-coeff->x0, -coeff->y0);
+    afw::geom::PointD crval
+	= afw::geom::Point2D(coeff->A*R2D, coeff->D*R2D);
+    afw::geom::PointD crpix = afw::geom::Point2D(-coeff->x0, -coeff->y0);
 
     Eigen::Matrix2d cd;
     cd << coeff->a[0], coeff->a[1], coeff->b[0], coeff->b[1];
@@ -3507,40 +3529,18 @@ lsst::meas::mosaic::wcsFromCoeff(Coeff::Ptr& coeff)
     //std::cout << sipAp << std::endl;
     //std::cout << sipBp << std::endl;
 
-    lsst::afw::image::TanWcs::Ptr wcs = lsst::afw::image::TanWcs::Ptr(new lsst::afw::image::TanWcs(crval, crpix, cd, sipA, sipB, sipAp, sipBp));
+    afw::image::TanWcs::Ptr wcs = afw::image::TanWcs::Ptr(new afw::image::TanWcs(crval, crpix, cd, sipA, sipB, sipAp, sipBp));
 
     return wcs;
 }
 
-// wholesale copied from afw::image::TanWcs.cc
-///@brief Decode the SIP headers for a given matrix, if present.
-static void decodeSipHeader(CONST_PTR(lsst::daf::base::PropertySet) const& fitsMetadata,
-                            std::string const& which,
-                            Eigen::MatrixXd *m) {
-    std::string header = which + "_ORDER";
-    if (!fitsMetadata->exists(header)) return;
-    int order = fitsMetadata->getAsInt(header);
-    m->resize(order + 1, order + 1);
-    boost::format format("%1%_%2%_%3%");
-    for (int i = 0; i <= order; ++i) {
-        for (int j = 0; j <= order; ++j) {
-            header = (format % which % i % j).str();
-            if (fitsMetadata->exists(header)) {
-                (*m)(i,j) = fitsMetadata->getAsDouble(header);
-            }
-            else {
-                (*m)(i, j) = 0.0;
-            }
-        }
-    }
-}
 
-//hsc::meas::mosaic::coeffFromTanWcs(lsst::afw::image::TanWcs::Ptr& tanwcs)
-Coeff::Ptr lsst::meas::mosaic::coeffFromTanWcs(lsst::afw::image::Wcs::Ptr& wcs)
+//hsc::coeffFromTanWcs(afw::image::TanWcs::Ptr& tanwcs)
+Coeff::Ptr coeffFromTanWcs(afw::image::Wcs::Ptr& wcs)
 {
 
-//    lsst::daf::base::PropertyList::Ptr fitsMetadata = tanwcs->getFitsMetadata();
-    lsst::daf::base::PropertyList::Ptr fitsMetadata = wcs->getFitsMetadata();
+//    daf::base::PropertyList::Ptr fitsMetadata = tanwcs->getFitsMetadata();
+    daf::base::PropertyList::Ptr fitsMetadata = wcs->getFitsMetadata();
     int orderA = fitsMetadata->get<int>("A_ORDER");
     int orderB = fitsMetadata->get<int>("B_ORDER");
     int orderAP = fitsMetadata->get<int>("AP_ORDER");
@@ -3617,11 +3617,11 @@ Coeff::Ptr lsst::meas::mosaic::coeffFromTanWcs(lsst::afw::image::Wcs::Ptr& wcs)
 }
 
 
-lsst::daf::base::PropertySet::Ptr
-lsst::meas::mosaic::metadataFromFluxFitParams(FluxFitParams::Ptr& ffp)
+daf::base::PropertySet::Ptr
+metadataFromFluxFitParams(FluxFitParams::Ptr& ffp)
 {
-    lsst::daf::base::PropertySet::Ptr metadata =
-       lsst::daf::base::PropertySet::Ptr(new lsst::daf::base::PropertySet());
+    daf::base::PropertySet::Ptr metadata =
+       daf::base::PropertySet::Ptr(new daf::base::PropertySet());
 
     metadata->set("ORDER", ffp->order);
     metadata->set("ABSOLUTE", ffp->absolute);
@@ -3640,9 +3640,9 @@ lsst::meas::mosaic::metadataFromFluxFitParams(FluxFitParams::Ptr& ffp)
     return metadata;
 }
 
-lsst::afw::image::Image<float>::Ptr
-lsst::meas::mosaic::getJImg(Coeff::Ptr& coeff,
-			   lsst::afw::cameraGeom::Ccd::Ptr& ccd)
+afw::image::Image<float>::Ptr
+getJImg(Coeff::Ptr& coeff,
+			   afw::cameraGeom::Ccd::Ptr& ccd)
 {
     double scale = coeff->pixelScale();
     double deg2pix = 1. / scale;
@@ -3650,10 +3650,10 @@ lsst::meas::mosaic::getJImg(Coeff::Ptr& coeff,
     int width  = ccd->getAllPixels(true).getWidth();
     int height = ccd->getAllPixels(true).getHeight();
 
-    lsst::afw::image::Image<float>::Ptr img(new lsst::afw::image::Image<float>(width, height));
+    afw::image::Image<float>::Ptr img(new afw::image::Image<float>(width, height));
 
-    lsst::afw::geom::PointD  center = ccd->getCenter().getPixels(1.0);
-    lsst::afw::cameraGeom::Orientation ori = ccd->getOrientation();
+    afw::geom::PointD  center = ccd->getCenter().getPixels(1.0);
+    afw::cameraGeom::Orientation ori = ccd->getOrientation();
     double cosYaw = ori.getCosYaw();
     double sinYaw = ori.getSinYaw();
 
@@ -3683,10 +3683,10 @@ lsst::meas::mosaic::getJImg(Coeff::Ptr& coeff,
 	    }
 	}
 
-	lsst::afw::image::Image<float>::x_iterator begin = img->row_begin(y);
-	lsst::afw::image::Image<float>::x_iterator end   = img->row_end(y);
+	afw::image::Image<float>::x_iterator begin = img->row_begin(y);
+	afw::image::Image<float>::x_iterator end   = img->row_end(y);
 
-	for (lsst::afw::image::Image<float>::x_iterator ptr = begin; ptr != end; ptr++) {
+	for (afw::image::Image<float>::x_iterator ptr = begin; ptr != end; ptr++) {
 
 	    int x = ptr - begin;
 
@@ -3697,14 +3697,14 @@ lsst::meas::mosaic::getJImg(Coeff::Ptr& coeff,
     return img;
 }
 
-lsst::afw::image::Image<float>::Ptr
-lsst::meas::mosaic::getJImg(lsst::afw::image::Wcs::Ptr& wcs,
+afw::image::Image<float>::Ptr
+getJImg(afw::image::Wcs::Ptr& wcs,
 			   int width, int height)
 {
     double scale = wcs->pixelScale().asDegrees();
     double deg2pix = 1. / scale;
 
-    lsst::afw::image::Image<float>::Ptr img(new lsst::afw::image::Image<float>(width, height));
+    afw::image::Image<float>::Ptr img(new afw::image::Image<float>(width, height));
 
     double *vals = new double[width];
 
@@ -3722,20 +3722,20 @@ lsst::meas::mosaic::getJImg(lsst::afw::image::Wcs::Ptr& wcs,
 
 	    double u = x;
 	    double v = y;
-	    double val0 = wcs->pixArea(lsst::afw::geom::Point2D(u, v)) * deg2pix * deg2pix;
+	    double val0 = wcs->pixArea(afw::geom::Point2D(u, v)) * deg2pix * deg2pix;
 	    u = xend;
 	    v = y;
-	    double val1 = wcs->pixArea(lsst::afw::geom::Point2D(u, v)) * deg2pix * deg2pix;
+	    double val1 = wcs->pixArea(afw::geom::Point2D(u, v)) * deg2pix * deg2pix;
 
 	    for (int i = 0; i < interval; i++) {
 		vals[x+i] = val0 + (val1 - val0) / interval * i;
 	    }
 	}
 
-	lsst::afw::image::Image<float>::x_iterator begin = img->row_begin(y);
-	lsst::afw::image::Image<float>::x_iterator end   = img->row_end(y);
+	afw::image::Image<float>::x_iterator begin = img->row_begin(y);
+	afw::image::Image<float>::x_iterator end   = img->row_end(y);
 
-	for (lsst::afw::image::Image<float>::x_iterator ptr = begin; ptr != end; ptr++) {
+	for (afw::image::Image<float>::x_iterator ptr = begin; ptr != end; ptr++) {
 
 	    int x = ptr - begin;
 
@@ -3746,9 +3746,9 @@ lsst::meas::mosaic::getJImg(lsst::afw::image::Wcs::Ptr& wcs,
     return img;
 }
 
-lsst::afw::image::Image<float>::Ptr
-lsst::meas::mosaic::getJImg(lsst::afw::image::Wcs::Ptr& wcs,
-			   lsst::afw::cameraGeom::Ccd::Ptr& ccd)
+afw::image::Image<float>::Ptr
+getJImg(afw::image::Wcs::Ptr& wcs,
+			   afw::cameraGeom::Ccd::Ptr& ccd)
 {
     int width  = ccd->getAllPixels(true).getWidth();
     int height = ccd->getAllPixels(true).getHeight();
@@ -3756,18 +3756,18 @@ lsst::meas::mosaic::getJImg(lsst::afw::image::Wcs::Ptr& wcs,
     return getJImg(wcs, width, height);
 }
 
-lsst::afw::image::Image<float>::Ptr
-lsst::meas::mosaic::getFCorImg(FluxFitParams::Ptr& p,
-			      lsst::afw::cameraGeom::Ccd::Ptr& ccd,
+afw::image::Image<float>::Ptr
+getFCorImg(FluxFitParams::Ptr& p,
+			      afw::cameraGeom::Ccd::Ptr& ccd,
 			      Coeff::Ptr& coeff)
 {
     int width  = ccd->getAllPixels(true).getWidth();
     int height = ccd->getAllPixels(true).getHeight();
 
-    lsst::afw::image::Image<float>::Ptr img(new lsst::afw::image::Image<float>(width, height));
+    afw::image::Image<float>::Ptr img(new afw::image::Image<float>(width, height));
 
-    lsst::afw::geom::PointD  center = ccd->getCenter().getPixels(1.0);
-    lsst::afw::cameraGeom::Orientation ori = ccd->getOrientation();
+    afw::geom::PointD  center = ccd->getCenter().getPixels(1.0);
+    afw::cameraGeom::Orientation ori = ccd->getOrientation();
     double cosYaw = ori.getCosYaw();
     double sinYaw = ori.getSinYaw();
 
@@ -3796,10 +3796,10 @@ lsst::meas::mosaic::getFCorImg(FluxFitParams::Ptr& p,
 	    }
 	}
 
-	lsst::afw::image::Image<float>::x_iterator begin = img->row_begin(y);
-	lsst::afw::image::Image<float>::x_iterator end   = img->row_end(y);
+	afw::image::Image<float>::x_iterator begin = img->row_begin(y);
+	afw::image::Image<float>::x_iterator end   = img->row_end(y);
 
-	for (lsst::afw::image::Image<float>::x_iterator ptr = begin; ptr != end; ptr++) {
+	for (afw::image::Image<float>::x_iterator ptr = begin; ptr != end; ptr++) {
 
 	    int x = ptr - begin;
 
@@ -3810,10 +3810,10 @@ lsst::meas::mosaic::getFCorImg(FluxFitParams::Ptr& p,
     return img;
 }
 
-lsst::afw::image::Image<float>::Ptr
-lsst::meas::mosaic::getFCorImg(FluxFitParams::Ptr& p, int width, int height)
+afw::image::Image<float>::Ptr
+getFCorImg(FluxFitParams::Ptr& p, int width, int height)
 {
-    lsst::afw::image::Image<float>::Ptr img(new lsst::afw::image::Image<float>(width, height));
+    afw::image::Image<float>::Ptr img(new afw::image::Image<float>(width, height));
 
     double *vals = new double[width];
 
@@ -3840,10 +3840,10 @@ lsst::meas::mosaic::getFCorImg(FluxFitParams::Ptr& p, int width, int height)
 	    }
 	}
 
-	lsst::afw::image::Image<float>::x_iterator begin = img->row_begin(y);
-	lsst::afw::image::Image<float>::x_iterator end   = img->row_end(y);
+	afw::image::Image<float>::x_iterator begin = img->row_begin(y);
+	afw::image::Image<float>::x_iterator end   = img->row_end(y);
 
-	for (lsst::afw::image::Image<float>::x_iterator ptr = begin; ptr != end; ptr++) {
+	for (afw::image::Image<float>::x_iterator ptr = begin; ptr != end; ptr++) {
 
 	    int x = ptr - begin;
 
@@ -3854,9 +3854,9 @@ lsst::meas::mosaic::getFCorImg(FluxFitParams::Ptr& p, int width, int height)
     return img;
 }
 
-lsst::afw::image::Image<float>::Ptr
-lsst::meas::mosaic::getFCorImg(FluxFitParams::Ptr& p,
-			      lsst::afw::cameraGeom::Ccd::Ptr& ccd)
+afw::image::Image<float>::Ptr
+getFCorImg(FluxFitParams::Ptr& p,
+			      afw::cameraGeom::Ccd::Ptr& ccd)
 {
     int width  = ccd->getAllPixels(true).getWidth();
     int height = ccd->getAllPixels(true).getHeight();
@@ -3864,3 +3864,4 @@ lsst::meas::mosaic::getFCorImg(FluxFitParams::Ptr& p,
     return getFCorImg(p, width, height);
 }
 
+}}} // namespace lsst::meas::mosaic
