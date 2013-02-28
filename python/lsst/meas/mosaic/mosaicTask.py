@@ -109,23 +109,6 @@ class MosaicTask(pipeBase.CmdLineTask):
         for i in ccdIds:
             ccd = cameraGeomUtils.findCcd(camera, cameraGeom.Id(int(i)))
             ccds[i] = ccd
-
-        # Calculate mean position of all CCD chips
-        sx = sy = 0.
-        for ccd in ccds.values():
-            center = ccd.getCenter().getPixels(ccd.getPixelSize())
-            sx += center[0]
-            sy += center[1]
-        dx = sx / ccds.size()
-        dy = sy / ccds.size()
-
-        # Shift the origin of CCD chips
-        for ccd in ccds.values():
-            pixelSize = ccd.getPixelSize()
-            ccd.setCenter(ccd.getCenter()
-                          - cameraGeom.FpPoint(dx*pixelSize, dy*pixelSize)
-                          - cameraGeom.FpPoint(ccd.getAllPixels(True).getWidth()*0.5,
-                                               ccd.getAllPixels(True).getHeight()*0.5))
         
         return ccds
         
