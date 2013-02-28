@@ -43,15 +43,7 @@ class MosaicRunner(pipeBase.TaskRunner):
 
     def __call__(self, args):
         task = self.TaskClass(config=self.config, log=self.log)
-        if self.doRaise:
-            result = task.run(*args)
-        else:
-            try:
-                result = task.run(*args)
-            except Exception, e:
-                task.log.fatal("Failed on dataId=%s: %s" % (dataRef.dataId, e))
-                if not isinstance(e, TaskError):
-                    traceback.print_exc(file=sys.stderr)
+        result = task.run(*args)
 
 class MosaicConfig(pexConfig.Config):
     nBrightest = pexConfig.RangeField(
