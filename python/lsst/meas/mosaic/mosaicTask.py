@@ -19,6 +19,7 @@ import lsst.pipe.base                   as pipeBase
 import lsst.meas.mosaic.mosaicLib       as measMosaic
 import lsst.meas.astrom.astrom          as measAstrom
 from lsst.meas.photocal.colorterms import Colorterm
+import lsst.pipe.base.argumentParser    as argParser
 
 class MosaicRunner(pipeBase.TaskRunner):
     """Subclass of TaskRunner for MosaicTask
@@ -106,6 +107,19 @@ class MosaicTask(pipeBase.CmdLineTask):
     ConfigClass = MosaicConfig
     _DefaultName = "Mosaic"
 
+    # override solely to change datasetType to calexp
+    @classmethod
+    def _makeArgumentParser(cls):
+        parser = argParser.ArgumentParser(name=cls._DefaultName)
+        parser.add_id_argument(name="--id", datasetType="calexp", help="data ID, e.g. --id visit=12345 ccd=1,2")
+        return parser
+
+
+    #  This code transforms a frameId (visit number) and ccdId (non-sequential) into a dataId
+    def getDataId(self, butler, frameId, ccdId):
+        dataId = butler.mapper._getDataId(frameId, ccdId)
+        return dataId
+
     def readCcd(self, camera, ccdIds):
         self.log.info("Reading CCD info ...")
 
@@ -113,12 +127,11 @@ class MosaicTask(pipeBase.CmdLineTask):
         for i in ccdIds:
             ccd = cameraGeomUtils.findCcd(camera, cameraGeom.Id(int(i)))
             ccds[i] = ccd
-        
         return ccds
         
     def getWcsForCcd(self, butler, frameId, ccdId):
 
-        dataId = {'visit': frameId, 'ccd':ccdId}
+        dataId = self.getDataId(butler,frameId, ccdId)
 
         try:
             md = butler.get('calexp_md', dataId)
@@ -136,7 +149,7 @@ class MosaicTask(pipeBase.CmdLineTask):
             found = 0
             for ccdId in ccdSet.keys():
                 ccd = ccdSet[ccdId]
-                dataId = {'visit': frameId, 'ccd': ccdId}
+                dataId = self.getDataId(butler, frameId, ccdId)
                 if (butler.datasetExists('calexp',  dataId) and
                     butler.datasetExists('src',     dataId) and
                     butler.datasetExists('icSrc',   dataId) and
@@ -159,7 +172,7 @@ class MosaicTask(pipeBase.CmdLineTask):
 
         for iexp in wcsDic.keys():
             for ichip in ccdSet.keys():
-                dataId = {'visit': iexp, 'ccd': ichip}
+                dataId = self.getDataId(butler, iexp, ichip)
                 if (butler.datasetExists('calexp',  dataId) and
                     butler.datasetExists('src',     dataId) and
                     butler.datasetExists('icSrc',   dataId) and
@@ -186,7 +199,10 @@ class MosaicTask(pipeBase.CmdLineTask):
         psfKey = None                       # Table key for classification.psfstar
         if isinstance(sources, afwTable.ReferenceMatchVector) or isinstance(sources[0], afwTable.ReferenceMatch):
             sourceList = [s.second for s in sources]
-            psfKey = sourceList[0].schema.find("calib.psf.used").getKey()
+            try:
+                psfKey = sourceList[0].schema.find("calib.psf.used").getKey()
+            except:
+                psfKey = None
         else:
             sourceList = sources
 
@@ -204,7 +220,7 @@ class MosaicTask(pipeBase.CmdLineTask):
 
     def getAllForCcd(self, butler, astrom, frame, ccd, ct=None):
 
-        data = {'visit': frame, 'ccd': ccd}
+        data = self.getDataId(butler, frame, ccd)
 
         try:
             if not butler.datasetExists('src', data):
@@ -323,7 +339,8 @@ class MosaicTask(pipeBase.CmdLineTask):
                 calib.setFluxMag0(1.0/scale)
                 exp.setCalib(calib)
                 try:
-                    self.butler.put(exp, 'wcs', dict(visit=iexp, ccd=ichip))
+                    dataId = self.getDataId(self.butler, iexp, ichip)
+                    self.butler.put(exp, 'wcs', dataId)
                 except Exception, e:
                     print "failed to write something: %s" % (e)
 
@@ -341,7 +358,8 @@ class MosaicTask(pipeBase.CmdLineTask):
                 calib.setFluxMag0(1.0/scale)
                 exp.setCalib(calib)
                 try:
-                    self.butler.put(exp, 'fcr', dict(visit=iexp, ccd=ichip))
+                    dataId = self.getDataId(self.butler, iexp, ichip)
+                    self.butler.put(exp, 'fcr', dataId)
                 except Exception, e:
                     print "failed to write something: %s" % (e)
 
@@ -932,7 +950,6 @@ class MosaicTask(pipeBase.CmdLineTask):
         if ((self.config.outputDiag or self.config.outputSnapshots)
             and not os.path.isdir(self.config.outputDir)):
             os.mkdir(self.config.outputDir)
-
         ccdSet = self.readCcd(butler.mapper.camera, ccdIds)
 
         if debug:
@@ -949,10 +966,10 @@ class MosaicTask(pipeBase.CmdLineTask):
             for iexp, wcs in wcsDic.iteritems():
                 self.log.info(str(iexp)+" "+str(wcs.getPixelOrigin())+" "+
                               str(wcs.getSkyOrigin().getPosition(afwGeom.degrees)))
-
+  
         sourceSet, matchList = self.readCatalog(butler, wcsDic.keys(), ccdSet.keys(), ct)
-
         wcsDic, sourceSet, matchList = self.checkInputs(wcsDic, sourceSet, matchList)
+
         self.log.info("frameIds : "+str(wcsDic.keys()))
         self.log.info("ccdIds : "+str(ccdSet.keys()))
 
@@ -963,7 +980,6 @@ class MosaicTask(pipeBase.CmdLineTask):
             self.log.info("nbrightest : %d" % nbrightest)
 
         allMat, allSource =self.mergeCatalog(sourceSet, matchList, ccdSet, d_lim, nbrightest)
-
         nmatch  = allMat.size()
         nsource = allSource.size()
         matchVec  = measMosaic.obsVecFromSourceGroup(allMat,    wcsDic, ccdSet)
@@ -993,14 +1009,14 @@ class MosaicTask(pipeBase.CmdLineTask):
         ffp.u_max = (math.floor(u_max / 10.) + 1) * 10
         ffp.v_max = (math.floor(v_max / 10.) + 1) * 10
 
-        fexp = measMosaic.map_int_float()
-        fchip = measMosaic.map_int_float()
+        fexp = measMosaic.map_exptype_float()
+        fchip = measMosaic.map_chiptype_float()
 
         if internal:
             coeffSet = measMosaic.solveMosaic_CCD(order, nmatch, nsource,
                                                   matchVec, sourceVec,
                                                   wcsDic, ccdSet, ffp, fexp, fchip,
-                                                  solveCcd, allowRotation, verbose, catRMS,
+                                                  solveCcd, allowRotation, verbose, catRMS, 
                                                   self.config.outputSnapshots, self.config.outputDir)
         else:
             coeffSet = measMosaic.solveMosaic_CCD_shot(order, nmatch, matchVec, 
@@ -1019,7 +1035,6 @@ class MosaicTask(pipeBase.CmdLineTask):
         self.fexp = fexp
         self.fchip = fchip
 
-        self.writeNewWcs()
         self.writeFcr()
 
         if self.config.outputDiag:
@@ -1032,21 +1047,20 @@ class MosaicTask(pipeBase.CmdLineTask):
         frameIds = list()
         ccdIds = list()
         filters = list()
-        fields = list()
         for dataRef in dataRefList:
             if not dataRef.dataId['visit'] in frameIds:
                 frameIds.append(dataRef.dataId['visit'])
-            if not dataRef.dataId['ccd'] in ccdIds:
-                ccdIds.append(dataRef.dataId['ccd'])
+
+            # This code will find ccd serial ids however the camera is organized
+            ccd = cameraGeomUtils.findCcd(butler.mapper.camera, cameraGeom.Id(butler.mapper._extractDetectorName(dataRef.dataId)))
+            if not ccd.getId().getSerial() in ccdIds:
+                ccdIds.append(ccd.getId().getSerial())
             if not dataRef.dataId['filter'] in filters:
                 filters.append(dataRef.dataId['filter'])
-            if not dataRef.dataId['field'] in fields:
-                fields.append(dataRef.dataId['field'])
-
         if len(filters) != 1:
             self.log.fatal("There are %d filters in input frames" % len(filters))
             return None
-
+        # could also use camera = butler.mapper.camera.getId().getName() here
         if camera == 'suprimecam':
             from lsst.obs.suprimecam.colorterms import colortermsData
             Colorterm.setColorterms(colortermsData)
@@ -1064,7 +1078,7 @@ class MosaicTask(pipeBase.CmdLineTask):
 
     def getAllForCcdNew(self, butler, astrom, frame, ccd, ct=None):
 
-        data = {'visit': frame, 'ccd': ccd}
+        data = self.getDataId(butler, frame, ccd)
 
         try:
             if not butler.datasetExists('src', data):
