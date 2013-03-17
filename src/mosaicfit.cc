@@ -232,7 +232,8 @@ double Coeff::pixelScale(void) {
     return sqrt(fabs(a[0] * b[1] - a[1] * b[0]));
 }
 
-Obs::Obs(int id_, double ra_, double dec_, double x_, double y_, int ichip_, int iexp_) :
+Obs::Obs(int id_, double ra_, double dec_, double x_, double y_, ChipType ichip_, ExpType iexp_) :
+
     ra(ra_),
     dec(dec_),
     xi(std::numeric_limits<double>::quiet_NaN()),
@@ -267,10 +268,10 @@ Obs::Obs(int id_, double ra_, double dec_, double x_, double y_, int ichip_, int
     mag(std::numeric_limits<double>::quiet_NaN()),
     mag0(std::numeric_limits<double>::quiet_NaN()),
     mag_cat(std::numeric_limits<double>::quiet_NaN())
-{}
+{ }
 
 
-Obs::Obs(int id_, double ra_, double dec_, int ichip_, int iexp_) :
+Obs::Obs(int id_, double ra_, double dec_, ChipType ichip_, ExpType iexp_) :
     ra(ra_),
     dec(dec_),
     xi(std::numeric_limits<double>::quiet_NaN()),
@@ -1383,11 +1384,11 @@ solveLinApprox(std::vector<Obs::Ptr>& o, CoeffSet& coeffVec, int nchip, Poly::Pt
 //	a[i] = coeffVec[i]->a;
 //	b[i] = coeffVec[i]->b;
 //    }
-    std::map<int, double*> a;
-    std::map<int, double*> b;
+    std::map<ExpType, double*> a;
+    std::map<ExpType, double*> b;
     for (CoeffSet::iterator it = coeffVec.begin(); it != coeffVec.end(); it++) {
-	a.insert(std::map<int, double*>::value_type(it->first, it->second->a));
-	b.insert(std::map<int, double*>::value_type(it->first, it->second->b));
+	a.insert(std::map<ExpType, double*>::value_type(it->first, it->second->a));
+	b.insert(std::map<ExpType, double*>::value_type(it->first, it->second->b));
     }
 
     long size, np = 0;
@@ -1405,7 +1406,7 @@ solveLinApprox(std::vector<Obs::Ptr>& o, CoeffSet& coeffVec, int nchip, Poly::Pt
     double *a_data = new double[size*size];
     double *b_data = new double[size];
 
-    for (long j = 0; j < size; j++) {
+    for (ExpType j = 0; j < size; j++) {
 	b_data[j] = 0.0;
 	for (long i = 0; i < size; i++) {
 	    a_data[i+j*size] = 0.0;
@@ -1575,11 +1576,11 @@ solveLinApprox_Star(std::vector<Obs::Ptr>& o, std::vector<Obs::Ptr>& s, int nsta
 //	a[i] = coeffVec[i]->a;
 //	b[i] = coeffVec[i]->b;
 //    }
-    std::map<int, double*> a;
-    std::map<int, double*> b;
+    std::map<ExpType, double*> a;
+    std::map<ExpType, double*> b;
     for (CoeffSet::iterator it = coeffVec.begin(); it != coeffVec.end(); it++) {
-	a.insert(std::map<int, double*>::value_type(it->first, it->second->a));
-	b.insert(std::map<int, double*>::value_type(it->first, it->second->b));
+	a.insert(std::map<ExpType, double*>::value_type(it->first, it->second->a));
+	b.insert(std::map<ExpType, double*>::value_type(it->first, it->second->b));
     }
 
     int* num = new int[nstar];
@@ -1644,9 +1645,9 @@ solveLinApprox_Star(std::vector<Obs::Ptr>& o, std::vector<Obs::Ptr>& s, int nsta
 	abort();
     }
 
-    for (long j = 0; j < size; j++) {
+    for (ExpType j = 0; j < size; j++) {
 	b_data[j] = 0.0;
-	for (long i = 0; i < size; i++) {
+	for (ExpType i = 0; i < size; i++) {
 	    a_data[i+j*size] = 0.0;
 	}
     }
@@ -2614,11 +2615,11 @@ double calcChi2(std::vector<Obs::Ptr>& o, CoeffSet& coeffVec, Poly::Ptr p, bool 
 //	a[i] = coeffVec[i]->a;
 //	b[i] = coeffVec[i]->b;
 //    }
-    std::map<int, double*> a;
-    std::map<int, double*> b;
+    std::map<ExpType, double*> a;
+    std::map<ExpType, double*> b;
     for (CoeffSet::iterator it = coeffVec.begin(); it != coeffVec.end(); it++) {
-	a.insert(std::map<int, double*>::value_type(it->first, it->second->a));
-	b.insert(std::map<int, double*>::value_type(it->first, it->second->b));
+	a.insert(std::map<ExpType, double*>::value_type(it->first, it->second->a));
+	b.insert(std::map<ExpType, double*>::value_type(it->first, it->second->b));
     }
 
     double chi2 = 0.0;
@@ -2658,11 +2659,11 @@ void flagObj2(std::vector<Obs::Ptr>& o, CoeffSet& coeffVec, Poly::Ptr p, double 
 //	a[i] = coeffVec[i]->a;
 //	b[i] = coeffVec[i]->b;
 //    }
-    std::map<int, double*> a;
-    std::map<int, double*> b;
+    std::map<ExpType, double*> a;
+    std::map<ExpType, double*> b;
     for (CoeffSet::iterator it = coeffVec.begin(); it != coeffVec.end(); it++) {
-	a.insert(std::map<int, double*>::value_type(it->first, it->second->a));
-	b.insert(std::map<int, double*>::value_type(it->first, it->second->b));
+	a.insert(std::map<ExpType, double*>::value_type(it->first, it->second->a));
+	b.insert(std::map<ExpType, double*>::value_type(it->first, it->second->b));
     }
 
     int nreject = 0;
@@ -2729,9 +2730,9 @@ lsst::meas::mosaic::obsVecFromSourceGroup(SourceGroup const &all,
 	//std::cout << ra << " " << dec << std::endl;
 	//std::cout << mag0 << std::endl;
 	for (size_t j = 1; j < ss.size(); j++) {
-	    int id    = ss[j]->getId();
-	    int iexp  = ss[j]->getExp();
-	    int ichip = ss[j]->getChip();
+	    IdType id    = ss[j]->getId();
+	    ExpType iexp  = ss[j]->getExp();
+	    ChipType  ichip = ss[j]->getChip();
 	    double x = ss[j]->getX();
 	    double y = ss[j]->getY();
 	    Obs::Ptr o = Obs::Ptr(new Obs(id, ra, dec, x, y, ichip, iexp));
@@ -2786,8 +2787,8 @@ void fluxFitRelative(ObsVec& matchVec,
 		     int nsource,
 		     WcsDic& wcsDic,
 		     CcdSet& ccdSet,
-		     std::map<int, float>& fexp,
-		     std::map<int, float>& fchip,
+		     std::map<ExpType, float>& fexp,
+		     std::map<ChipType, float>& fchip,
 		     FluxFitParams::Ptr& ffp) {
 
     int nexp = wcsDic.size();
@@ -2818,11 +2819,11 @@ void fluxFitRelative(ObsVec& matchVec,
     int i = 0;
     for (WcsDic::iterator it = wcsDic.begin();
 	 it != wcsDic.end(); it++, i++) {
-	fexp.insert(std::map<int, float>::value_type(it->first, pow(10., -0.4*fsol[i])));
+	fexp.insert(std::map<ExpType, float>::value_type(it->first, pow(10., -0.4*fsol[i])));
     }
     for (CcdSet::iterator it = ccdSet.begin();
 	 it != ccdSet.end(); it++, i++) {
-	fchip.insert(std::map<int, float>::value_type(it->first, pow(10., -0.4*fsol[i])));
+	fchip.insert(std::map<ExpType, float>::value_type(it->first, pow(10., -0.4*fsol[i])));
     }
     for (int i = 0; i < ffp->ncoeff; i++) {
        printf("%2d %8.5f\n", i, ffp->coeff[i]);
@@ -2836,8 +2837,8 @@ void fluxFitAbsolute(ObsVec& matchVec,
 		     int nsource,
 		     WcsDic& wcsDic,
 		     CcdSet& ccdSet,
-		     std::map<int, float>& fexp,
-		     std::map<int, float>& fchip,
+		     std::map<ExpType, float>& fexp,
+		     std::map<ChipType, float>& fchip,
 		     FluxFitParams::Ptr& ffp) {
 
     int nexp = wcsDic.size();
@@ -2868,11 +2869,11 @@ void fluxFitAbsolute(ObsVec& matchVec,
     int i = 0;
     for (WcsDic::iterator it = wcsDic.begin();
 	 it != wcsDic.end(); it++, i++) {
-	fexp.insert(std::map<int, float>::value_type(it->first, pow(10., -0.4*fsol[i])));
+	fexp.insert(std::map<ExpType, float>::value_type(it->first, pow(10., -0.4*fsol[i])));
     }
     for (CcdSet::iterator it = ccdSet.begin();
 	 it != ccdSet.end(); it++, i++) {
-	fchip.insert(std::map<int, float>::value_type(it->first, pow(10., -0.4*fsol[i])));
+	fchip.insert(std::map<ExpType, float>::value_type(it->first, pow(10., -0.4*fsol[i])));
     }
     for (int i = 0; i < ffp->ncoeff; i++) {
        printf("%2d %8.5f\n", i, ffp->coeff[i]);
@@ -3082,7 +3083,7 @@ initialFit(int nexp,
     CoeffSet coeffVec;
 
     for (WcsDic::iterator it =  wcsDic.begin(); it != wcsDic.end(); it++) {
-	int iexp = it->first;
+	ExpType iexp = it->first;
 
 	// Select objects for a specific exposure id
 	std::vector<Obs::Ptr> obsVec_sub;
@@ -3181,7 +3182,7 @@ initialFit(int nexp,
 	printf("calcChi2: %e\n", chi2);
 	/////////////////////////////////////////////////////////////////////////////////
 
-	coeffVec.insert(std::map<int, Coeff::Ptr>::value_type(iexp, c));
+	coeffVec.insert(std::map<ExpType, Coeff::Ptr>::value_type(iexp, c));
 
 	delete [] a;
     }
@@ -3196,8 +3197,8 @@ lsst::meas::mosaic::solveMosaic_CCD_shot(int order,
 					 WcsDic &wcsDic,
 					 CcdSet &ccdSet,
 					 FluxFitParams::Ptr &ffp,
-					 std::map<int, float> &fexp,
-					 std::map<int, float> &fchip,
+					 std::map<ExpType, float> &fexp,
+					 std::map<ChipType, float> &fchip,
 					 bool solveCcd,
 					 bool allowRotation,
 					 bool verbose,
@@ -3292,11 +3293,11 @@ lsst::meas::mosaic::solveMosaic_CCD_shot(int order,
 	flagObj2(matchVec, coeffVec, p, 9.0, catRMS);
     }
 
-    std::map<int, Eigen::Matrix2d> cd;
+    std::map<ExpType, Eigen::Matrix2d> cd;
     for (CoeffSet::iterator it = coeffVec.begin(); it != coeffVec.end(); it++) {
 	Eigen::Matrix2d c;
 	c << it->second->a[0], it->second->a[1], it->second->b[0], it->second->b[1];
-	cd.insert(std::map<int, Eigen::Matrix2d>::value_type(it->first, c));
+	cd.insert(std::map<ExpType, Eigen::Matrix2d>::value_type(it->first, c));
     }
     for (int i = 0; i < nMobs; i++) {
 	double CD1_1 = cd[matchVec[i]->iexp](0,0);
@@ -3349,8 +3350,8 @@ lsst::meas::mosaic::solveMosaic_CCD(int order,
 				    WcsDic &wcsDic,
 				    CcdSet &ccdSet,
 				    FluxFitParams::Ptr &ffp,
-				    std::map<int, float> &fexp,
-				    std::map<int, float> &fchip,
+				    std::map<ExpType, float> &fexp,
+				    std::map<ChipType, float> &fchip,
 				    bool solveCcd,
 				    bool allowRotation,
 				    bool verbose,
@@ -3499,11 +3500,11 @@ lsst::meas::mosaic::solveMosaic_CCD(int order,
 	flagObj2(sourceVec, coeffVec, p, 9.0);
     }
 
-    std::map<int, Eigen::Matrix2d> cd;
+    std::map<ExpType, Eigen::Matrix2d> cd;
     for (CoeffSet::iterator it = coeffVec.begin(); it != coeffVec.end(); it++) {
 	Eigen::Matrix2d c;
 	c << it->second->a[0], it->second->a[1], it->second->b[0], it->second->b[1];
-	cd.insert(std::map<int, Eigen::Matrix2d>::value_type(it->first, c));
+	cd.insert(std::map<ExpType, Eigen::Matrix2d>::value_type(it->first, c));
     }
     for (int i = 0; i < nMobs; i++) {
 	double CD1_1 = cd[matchVec[i]->iexp](0,0);
