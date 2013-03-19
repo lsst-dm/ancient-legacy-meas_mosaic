@@ -2,11 +2,14 @@
 #include <strings.h>
 #include "fitsio.h"
 
+#include "lsst/utils/ieee.h"
 #include "lsst/meas/mosaic/mosaicfit.h"
+#include "lsst/meas/mosaic/snapshot.h"
 #include "lsst/afw/coord/Coord.h"
 #include "lsst/afw/table/Match.h"
 #include "boost/make_shared.hpp"
 #include "boost/format.hpp"
+#include "boost/filesystem/path.hpp"
 
 #define D2R (M_PI/180.)
 #define R2D (180./M_PI)
@@ -230,7 +233,8 @@ double Coeff::pixelScale(void) {
     return sqrt(fabs(a[0] * b[1] - a[1] * b[0]));
 }
 
-Obs::Obs(int id_, double ra_, double dec_, double x_, double y_, int ichip_, int iexp_) :
+Obs::Obs(int id_, double ra_, double dec_, double x_, double y_, ChipType ichip_, ExpType iexp_) :
+
     ra(ra_),
     dec(dec_),
     xi(std::numeric_limits<double>::quiet_NaN()),
@@ -260,14 +264,15 @@ Obs::Obs(int id_, double ra_, double dec_, double x_, double y_, int ichip_, int
     jstar(-2),
     iexp(iexp_),
     ichip(ichip_),
+    jexp(-1),
     good(true),
     mag(std::numeric_limits<double>::quiet_NaN()),
     mag0(std::numeric_limits<double>::quiet_NaN()),
     mag_cat(std::numeric_limits<double>::quiet_NaN())
-{}
+{ }
 
 
-Obs::Obs(int id_, double ra_, double dec_, int ichip_, int iexp_) :
+Obs::Obs(int id_, double ra_, double dec_, ChipType ichip_, ExpType iexp_) :
     ra(ra_),
     dec(dec_),
     xi(std::numeric_limits<double>::quiet_NaN()),
@@ -297,6 +302,7 @@ Obs::Obs(int id_, double ra_, double dec_, int ichip_, int iexp_) :
     jstar(-2),
     iexp(iexp_),
     ichip(ichip_),
+    jexp(-1),
     good(true),
     mag(std::numeric_limits<double>::quiet_NaN()),
     mag0(std::numeric_limits<double>::quiet_NaN()),
@@ -304,8 +310,6 @@ Obs::Obs(int id_, double ra_, double dec_, int ichip_, int iexp_) :
 {}
 
 void Obs::setUV(lsst::afw::cameraGeom::Ccd::Ptr const &ccd, double x0, double y0) {
-    lsst::afw::geom::PointD  center = ccd->getCenter().getPixels(1.0);
-
     lsst::afw::cameraGeom::Orientation ori = ccd->getOrientation();
     double cosYaw = ori.getCosYaw();
     double sinYaw = ori.getSinYaw();
@@ -313,8 +317,11 @@ void Obs::setUV(lsst::afw::cameraGeom::Ccd::Ptr const &ccd, double x0, double y0
     this->u0 = this->x * cosYaw - this->y * sinYaw;
     this->v0 = this->x * sinYaw + this->y * cosYaw;
 
-    this->u  = this->u0 + center[0] + x0;
-    this->v  = this->v0 + center[1] + y0;
+    afw::geom::Point2D xy(this->x, this->y);
+    afw::geom::Point2D uv = ccd->getPositionFromPixel(xy).getPixels(ccd->getPixelSize());
+
+    this->u = uv.getX() + x0;
+    this->v = uv.getY() + y0;
 }
 
 void Obs::setXiEta(double ra_c, double dec_c) {
@@ -980,16 +987,18 @@ lsst::meas::mosaic::kdtreeMat(SourceMatchGroup &matchList) {
 
 KDTree::Ptr
 lsst::meas::mosaic::kdtreeSource(SourceGroup const &sourceSet,
-				KDTree::Ptr rootMat,
-				int nchip,
-				lsst::afw::geom::Angle d_lim, unsigned int nbrightest) {
+				 KDTree::Ptr rootMat,
+				 CcdSet &ccdSet,
+				 lsst::afw::geom::Angle d_lim, unsigned int nbrightest) {
+    int nchip = ccdSet.size();
     double fluxlim[sourceSet.size()*nchip];
 
     for (size_t j = 0; j < sourceSet.size(); j++) {
-	for (int k = 0; k < nchip; k++) {
+	int k = 0;
+	for (CcdSet::iterator it = ccdSet.begin(); it != ccdSet.end(); it++, k++) {
 	    std::vector<double> v;
 	    for (size_t i = 0; i < sourceSet[j].size(); i++) {
-		if (sourceSet[j][i]->getChip() == k) {
+		if (sourceSet[j][i]->getChip() == it->first) {
 		    v.push_back(sourceSet[j][i]->getFlux());
 		}
 	    }
@@ -1005,7 +1014,11 @@ lsst::meas::mosaic::kdtreeSource(SourceGroup const &sourceSet,
 
     SourceSet set;
     for (size_t i = 0; i < sourceSet[0].size(); i++) {
-	int k = sourceSet[0][i]->getChip();
+	//int k = sourceSet[0][i]->getChip();
+	int k = 0;
+	for (CcdSet::iterator it = ccdSet.begin(); it != ccdSet.end(); it++, k++) {
+	    if (sourceSet[0][i]->getChip() == it->first) break;
+	}
         if (sourceSet[0][i]->getFlux() >= fluxlim[k] &&
 	    rootMat->findSource(*sourceSet[0][i]) == NULL) {
 	    set.push_back(sourceSet[0][i]);
@@ -1021,7 +1034,11 @@ lsst::meas::mosaic::kdtreeSource(SourceGroup const &sourceSet,
     //std::cout << "(3) " << rootSource->count() << std::endl;
     for (size_t j = 1; j < sourceSet.size(); j++) {
 	for (size_t i = 0; i < sourceSet[j].size(); i++) {
-	    int k = sourceSet[j][i]->getChip();
+	    //int k = sourceSet[j][i]->getChip();
+	    int k = 0;
+	    for (CcdSet::iterator it = ccdSet.begin(); it != ccdSet.end(); it++, k++) {
+		if (sourceSet[j][i]->getChip() == it->first) break;
+	    }
 	    if (sourceSet[j][i]->getFlux() >= fluxlim[j*nchip+k] &&
 		rootMat->findSource(*sourceSet[j][i]) == NULL) {
                 if (rootSource) {
@@ -1336,7 +1353,7 @@ double flagObj(std::vector<Obs::Ptr>& objList, double *a, Poly::Ptr p, double e2
 	    o->good = false;
 	    nrejected++;
 	} else {
-	    o->good = true;
+	    //o->good = true;
 	}
     }
     printf("nrejected = %d\n", nrejected);
@@ -1347,7 +1364,8 @@ double flagObj(std::vector<Obs::Ptr>& objList, double *a, Poly::Ptr p, double e2
 double *
 solveLinApprox(std::vector<Obs::Ptr>& o, CoeffSet& coeffVec, int nchip, Poly::Ptr p,
 	       bool solveCcd=true,
-	       bool allowRotation=true)
+	       bool allowRotation=true,
+	       double catRMS=0.0)
 {
     int nobs  = o.size();
     int nexp = coeffVec.size();
@@ -1356,11 +1374,17 @@ solveLinApprox(std::vector<Obs::Ptr>& o, CoeffSet& coeffVec, int nchip, Poly::Pt
     int *xorder = p->xorder;
     int *yorder = p->yorder;
 
-    double **a = new double*[nexp];
-    double **b = new double*[nexp];
-    for (int i = 0; i < nexp; i++) {
-	a[i] = coeffVec[i]->a;
-	b[i] = coeffVec[i]->b;
+//    double **a = new double*[nexp];
+//    double **b = new double*[nexp];
+//    for (int i = 0; i < nexp; i++) {
+//	a[i] = coeffVec[i]->a;
+//	b[i] = coeffVec[i]->b;
+//    }
+    std::map<ExpType, double*> a;
+    std::map<ExpType, double*> b;
+    for (CoeffSet::iterator it = coeffVec.begin(); it != coeffVec.end(); it++) {
+	a.insert(std::map<ExpType, double*>::value_type(it->first, it->second->a));
+	b.insert(std::map<ExpType, double*>::value_type(it->first, it->second->b));
     }
 
     long size, np = 0;
@@ -1378,7 +1402,7 @@ solveLinApprox(std::vector<Obs::Ptr>& o, CoeffSet& coeffVec, int nchip, Poly::Pt
     double *a_data = new double[size*size];
     double *b_data = new double[size];
 
-    for (long j = 0; j < size; j++) {
+    for (ExpType j = 0; j < size; j++) {
 	b_data[j] = 0.0;
 	for (long i = 0; i < size; i++) {
 	    a_data[i+j*size] = 0.0;
@@ -1387,6 +1411,9 @@ solveLinApprox(std::vector<Obs::Ptr>& o, CoeffSet& coeffVec, int nchip, Poly::Pt
 
     double *pu = new double[ncoeff];
     double *pv = new double[ncoeff];
+
+    double isx2 = 1.0;
+    double isy2 = 1.0;
 
     if (solveCcd) {
 	for (int i = 0; i < nobs; i++) {
@@ -1414,50 +1441,54 @@ solveLinApprox(std::vector<Obs::Ptr>& o, CoeffSet& coeffVec, int nchip, Poly::Pt
 		Dx += a[o[i]->iexp][k] * pow(o[i]->u, xorder[k]-1) * pow(o[i]->v, yorder[k]-1) * (-xorder[k]*o[i]->v*o[i]->v0+yorder[k]*o[i]->u*o[i]->u0);
 		Dy += b[o[i]->iexp][k] * pow(o[i]->u, xorder[k]-1) * pow(o[i]->v, yorder[k]-1) * (-xorder[k]*o[i]->v*o[i]->v0+yorder[k]*o[i]->u*o[i]->u0);
 	    }
+	    double dxi  = Bx * o[i]->xerr + Cx * o[i]->yerr;
+	    double deta = By * o[i]->xerr + Cy * o[i]->yerr;
+	    isx2 = 1.0 / (pow(dxi,  2) + pow(catRMS, 2));
+	    isy2 = 1.0 / (pow(deta, 2) + pow(catRMS, 2));
 
 	    for (int k = 0; k < ncoeff; k++) {
-		b_data[k+       ncoeff*2*o[i]->iexp] += Ax * pu[k] * pv[k];
-		b_data[k+ncoeff+ncoeff*2*o[i]->iexp] += Ay * pu[k] * pv[k];
+		b_data[k+       ncoeff*2*o[i]->jexp] += Ax * pu[k] * pv[k] * isx2;
+		b_data[k+ncoeff+ncoeff*2*o[i]->jexp] += Ay * pu[k] * pv[k] * isy2;
 		// coeff x coeff
 		for (int j = 0; j < ncoeff; j++) {
-		    a_data[j+       ncoeff*2*o[i]->iexp+(k+       ncoeff*2*o[i]->iexp)*size] += pu[j] * pv[j] * pu[k] * pv[k];
-		    a_data[j+ncoeff+ncoeff*2*o[i]->iexp+(k+ncoeff+ncoeff*2*o[i]->iexp)*size] += pu[j] * pv[j] * pu[k] * pv[k];
+		    a_data[j+       ncoeff*2*o[i]->jexp+(k+       ncoeff*2*o[i]->jexp)*size] += pu[j] * pv[j] * pu[k] * pv[k] * isx2;
+		    a_data[j+ncoeff+ncoeff*2*o[i]->jexp+(k+ncoeff+ncoeff*2*o[i]->jexp)*size] += pu[j] * pv[j] * pu[k] * pv[k] * isy2;
 		}
 
 		// coeff x chip
-		a_data[k+       ncoeff*2*o[i]->iexp+(ncoeff*2*nexp+o[i]->ichip*np  )*size] += Bx * pu[k] * pv[k];
-		a_data[k+       ncoeff*2*o[i]->iexp+(ncoeff*2*nexp+o[i]->ichip*np+1)*size] += Cx * pu[k] * pv[k];
-		a_data[k+ncoeff+ncoeff*2*o[i]->iexp+(ncoeff*2*nexp+o[i]->ichip*np  )*size] += By * pu[k] * pv[k];
-		a_data[k+ncoeff+ncoeff*2*o[i]->iexp+(ncoeff*2*nexp+o[i]->ichip*np+1)*size] += Cy * pu[k] * pv[k];
-		a_data[ncoeff*2*nexp+o[i]->ichip*np  +(k+       ncoeff*2*o[i]->iexp)*size] += Bx * pu[k] * pv[k];
-		a_data[ncoeff*2*nexp+o[i]->ichip*np+1+(k+       ncoeff*2*o[i]->iexp)*size] += Cx * pu[k] * pv[k];
-		a_data[ncoeff*2*nexp+o[i]->ichip*np  +(k+ncoeff+ncoeff*2*o[i]->iexp)*size] += By * pu[k] * pv[k];
-		a_data[ncoeff*2*nexp+o[i]->ichip*np+1+(k+ncoeff+ncoeff*2*o[i]->iexp)*size] += Cy * pu[k] * pv[k];
+		a_data[k+       ncoeff*2*o[i]->jexp+(ncoeff*2*nexp+o[i]->jchip*np  )*size] += Bx * pu[k] * pv[k] * isx2;
+		a_data[k+       ncoeff*2*o[i]->jexp+(ncoeff*2*nexp+o[i]->jchip*np+1)*size] += Cx * pu[k] * pv[k] * isx2;
+		a_data[k+ncoeff+ncoeff*2*o[i]->jexp+(ncoeff*2*nexp+o[i]->jchip*np  )*size] += By * pu[k] * pv[k] * isy2;
+		a_data[k+ncoeff+ncoeff*2*o[i]->jexp+(ncoeff*2*nexp+o[i]->jchip*np+1)*size] += Cy * pu[k] * pv[k] * isy2;
+		a_data[ncoeff*2*nexp+o[i]->jchip*np  +(k+       ncoeff*2*o[i]->jexp)*size] += Bx * pu[k] * pv[k] * isx2;
+		a_data[ncoeff*2*nexp+o[i]->jchip*np+1+(k+       ncoeff*2*o[i]->jexp)*size] += Cx * pu[k] * pv[k] * isx2;
+		a_data[ncoeff*2*nexp+o[i]->jchip*np  +(k+ncoeff+ncoeff*2*o[i]->jexp)*size] += By * pu[k] * pv[k] * isy2;
+		a_data[ncoeff*2*nexp+o[i]->jchip*np+1+(k+ncoeff+ncoeff*2*o[i]->jexp)*size] += Cy * pu[k] * pv[k] * isy2;
 		if (allowRotation) {
-		    a_data[k+       ncoeff*2*o[i]->iexp+(ncoeff*2*nexp+o[i]->ichip*np+2)*size] += Dx * pu[k] * pv[k];
-		    a_data[k+ncoeff+ncoeff*2*o[i]->iexp+(ncoeff*2*nexp+o[i]->ichip*np+2)*size] += Dy * pu[k] * pv[k];
-		    a_data[ncoeff*2*nexp+o[i]->ichip*np+2+(k+       ncoeff*2*o[i]->iexp)*size] += Dx * pu[k] * pv[k];
-		    a_data[ncoeff*2*nexp+o[i]->ichip*np+2+(k+ncoeff+ncoeff*2*o[i]->iexp)*size] += Dy * pu[k] * pv[k];
+		    a_data[k+       ncoeff*2*o[i]->jexp+(ncoeff*2*nexp+o[i]->jchip*np+2)*size] += Dx * pu[k] * pv[k] * isx2;
+		    a_data[k+ncoeff+ncoeff*2*o[i]->jexp+(ncoeff*2*nexp+o[i]->jchip*np+2)*size] += Dy * pu[k] * pv[k] * isy2;
+		    a_data[ncoeff*2*nexp+o[i]->jchip*np+2+(k+       ncoeff*2*o[i]->jexp)*size] += Dx * pu[k] * pv[k] * isx2;
+		    a_data[ncoeff*2*nexp+o[i]->jchip*np+2+(k+ncoeff+ncoeff*2*o[i]->jexp)*size] += Dy * pu[k] * pv[k] * isy2;
 		}
 	    }
 
 	    // chip x chip
-	    a_data[ncoeff*2*nexp+o[i]->ichip*np  +(ncoeff*2*nexp+o[i]->ichip*np  )*size] += Bx * Bx + By * By;
-	    a_data[ncoeff*2*nexp+o[i]->ichip*np  +(ncoeff*2*nexp+o[i]->ichip*np+1)*size] += Bx * Cx + By * Cy;
-	    a_data[ncoeff*2*nexp+o[i]->ichip*np+1+(ncoeff*2*nexp+o[i]->ichip*np  )*size] += Cx * Bx + Cy * By;
-	    a_data[ncoeff*2*nexp+o[i]->ichip*np+1+(ncoeff*2*nexp+o[i]->ichip*np+1)*size] += Cx * Cx + Cy * Cy;
+	    a_data[ncoeff*2*nexp+o[i]->jchip*np  +(ncoeff*2*nexp+o[i]->jchip*np  )*size] += Bx * Bx * isx2 + By * By * isy2;
+	    a_data[ncoeff*2*nexp+o[i]->jchip*np  +(ncoeff*2*nexp+o[i]->jchip*np+1)*size] += Bx * Cx * isx2 + By * Cy * isy2;
+	    a_data[ncoeff*2*nexp+o[i]->jchip*np+1+(ncoeff*2*nexp+o[i]->jchip*np  )*size] += Cx * Bx * isx2 + Cy * By * isy2;
+	    a_data[ncoeff*2*nexp+o[i]->jchip*np+1+(ncoeff*2*nexp+o[i]->jchip*np+1)*size] += Cx * Cx * isx2 + Cy * Cy * isy2;
 	    if (allowRotation) {
-		a_data[ncoeff*2*nexp+o[i]->ichip*np  +(ncoeff*2*nexp+o[i]->ichip*np+2)*size] += Bx * Dx + By * Dy;
-		a_data[ncoeff*2*nexp+o[i]->ichip*np+1+(ncoeff*2*nexp+o[i]->ichip*np+2)*size] += Cx * Dx + Cy * Dy;
-		a_data[ncoeff*2*nexp+o[i]->ichip*np+2+(ncoeff*2*nexp+o[i]->ichip*np  )*size] += Dx * Bx + Dy * By;
-		a_data[ncoeff*2*nexp+o[i]->ichip*np+2+(ncoeff*2*nexp+o[i]->ichip*np+1)*size] += Dx * Cx + Dy * Cy;
-		a_data[ncoeff*2*nexp+o[i]->ichip*np+2+(ncoeff*2*nexp+o[i]->ichip*np+2)*size] += Dx * Dx + Dy * Dy;
+		a_data[ncoeff*2*nexp+o[i]->jchip*np  +(ncoeff*2*nexp+o[i]->jchip*np+2)*size] += Bx * Dx * isx2 + By * Dy * isy2;
+		a_data[ncoeff*2*nexp+o[i]->jchip*np+1+(ncoeff*2*nexp+o[i]->jchip*np+2)*size] += Cx * Dx * isx2 + Cy * Dy * isy2;
+		a_data[ncoeff*2*nexp+o[i]->jchip*np+2+(ncoeff*2*nexp+o[i]->jchip*np  )*size] += Dx * Bx * isx2 + Dy * By * isy2;
+		a_data[ncoeff*2*nexp+o[i]->jchip*np+2+(ncoeff*2*nexp+o[i]->jchip*np+1)*size] += Dx * Cx * isx2 + Dy * Cy * isy2;
+		a_data[ncoeff*2*nexp+o[i]->jchip*np+2+(ncoeff*2*nexp+o[i]->jchip*np+2)*size] += Dx * Dx * isx2 + Dy * Dy * isy2;
 	    }
 
-	    b_data[ncoeff*2*nexp+o[i]->ichip*np  ] += Ax * Bx + Ay * By;
-	    b_data[ncoeff*2*nexp+o[i]->ichip*np+1] += Ax * Cx + Ay * Cy;
+	    b_data[ncoeff*2*nexp+o[i]->jchip*np  ] += Ax * Bx * isx2 + Ay * By * isy2;
+	    b_data[ncoeff*2*nexp+o[i]->jchip*np+1] += Ax * Cx * isx2 + Ay * Cy * isy2;
 	    if (allowRotation) {
-		b_data[ncoeff*2*nexp+o[i]->ichip*np+2] += Ax * Dx + Ay * Dy;
+		b_data[ncoeff*2*nexp+o[i]->jchip*np+2] += Ax * Dx * isx2 + Ay * Dy * isy2;
 	    }
 	}
 
@@ -1473,6 +1504,10 @@ solveLinApprox(std::vector<Obs::Ptr>& o, CoeffSet& coeffVec, int nchip, Poly::Pt
 	    if (!o[i]->good) continue;
 	    double Ax = o[i]->xi;
 	    double Ay = o[i]->eta;
+	    double Bx = 0.0;
+	    double By = 0.0;
+	    double Cx = 0.0;
+	    double Cy = 0.0;
 	    for (int k = 0; k < ncoeff; k++) {
 		pu[k] = pow(o[i]->u, xorder[k]);
 		pv[k] = pow(o[i]->v, yorder[k]);
@@ -1481,22 +1516,30 @@ solveLinApprox(std::vector<Obs::Ptr>& o, CoeffSet& coeffVec, int nchip, Poly::Pt
 	    for (int k = 0; k < ncoeff; k++) {
 		Ax -= a[o[i]->iexp][k] * pu[k]   * pv[k];
 		Ay -= b[o[i]->iexp][k] * pu[k]   * pv[k];
+		Bx += a[o[i]->iexp][k] * pow(o[i]->u, xorder[k]-1) * pv[k]   * xorder[k];
+		By += b[o[i]->iexp][k] * pow(o[i]->u, xorder[k]-1) * pv[k]   * xorder[k];
+		Cx += a[o[i]->iexp][k] * pu[k]   * pow(o[i]->v, yorder[k]-1) * yorder[k];
+		Cy += b[o[i]->iexp][k] * pu[k]   * pow(o[i]->v, yorder[k]-1) * yorder[k];
 	    }
+	    double dxi  = Bx * o[i]->xerr + Cx * o[i]->yerr;
+	    double deta = By * o[i]->xerr + Cy * o[i]->yerr;
+	    isx2 = 1.0 / (pow(dxi,  2) + pow(catRMS, 2));
+	    isy2 = 1.0 / (pow(deta, 2) + pow(catRMS, 2));
 
 	    for (int k = 0; k < ncoeff; k++) {
-		b_data[k+       ncoeff*2*o[i]->iexp] += Ax * pu[k] * pv[k];
-		b_data[k+ncoeff+ncoeff*2*o[i]->iexp] += Ay * pu[k] * pv[k];
+		b_data[k+       ncoeff*2*o[i]->jexp] += Ax * pu[k] * pv[k] * isx2;
+		b_data[k+ncoeff+ncoeff*2*o[i]->jexp] += Ay * pu[k] * pv[k] * isy2;
 		// coeff x coeff
 		for (int j = 0; j < ncoeff; j++) {
-		    a_data[j+       ncoeff*2*o[i]->iexp+(k+       ncoeff*2*o[i]->iexp)*size] += pu[j] * pv[j] * pu[k] * pv[k];
-		    a_data[j+ncoeff+ncoeff*2*o[i]->iexp+(k+ncoeff+ncoeff*2*o[i]->iexp)*size] += pu[j] * pv[j] * pu[k] * pv[k];
+		    a_data[j+       ncoeff*2*o[i]->jexp+(k+       ncoeff*2*o[i]->jexp)*size] += pu[j] * pv[j] * pu[k] * pv[k] * isx2;
+		    a_data[j+ncoeff+ncoeff*2*o[i]->jexp+(k+ncoeff+ncoeff*2*o[i]->jexp)*size] += pu[j] * pv[j] * pu[k] * pv[k] * isy2;
 		}
 	    }
 	}
     }
 
-    delete [] a;
-    delete [] b;
+//    delete [] a;
+//    delete [] b;
 
     double *coeff = solveMatrix(size, a_data, b_data);
 
@@ -1512,7 +1555,8 @@ double *
 solveLinApprox_Star(std::vector<Obs::Ptr>& o, std::vector<Obs::Ptr>& s, int nstar,
 		    CoeffSet coeffVec, int nchip, Poly::Ptr p,
 		    bool solveCcd=true,
-		    bool allowRotation=true)
+		    bool allowRotation=true,
+		    double catRMS=0.0)
 {
     int nobs  = o.size();
     int nSobs = s.size();
@@ -1522,11 +1566,17 @@ solveLinApprox_Star(std::vector<Obs::Ptr>& o, std::vector<Obs::Ptr>& s, int nsta
     int *xorder = p->xorder;
     int *yorder = p->yorder;
 
-    double **a = new double*[nexp];
-    double **b = new double*[nexp];
-    for (int i = 0; i < nexp; i++) {
-	a[i] = coeffVec[i]->a;
-	b[i] = coeffVec[i]->b;
+//    double **a = new double*[nexp];
+//    double **b = new double*[nexp];
+//    for (int i = 0; i < nexp; i++) {
+//	a[i] = coeffVec[i]->a;
+//	b[i] = coeffVec[i]->b;
+//    }
+    std::map<ExpType, double*> a;
+    std::map<ExpType, double*> b;
+    for (CoeffSet::iterator it = coeffVec.begin(); it != coeffVec.end(); it++) {
+	a.insert(std::map<ExpType, double*>::value_type(it->first, it->second->a));
+	b.insert(std::map<ExpType, double*>::value_type(it->first, it->second->b));
     }
 
     int* num = new int[nstar];
@@ -1581,6 +1631,7 @@ solveLinApprox_Star(std::vector<Obs::Ptr>& o, std::vector<Obs::Ptr>& s, int nsta
 	a_data = new double[size*size];
     } catch (std::bad_alloc) {
 	std::cerr << "Memory allocation error: for a_data" << std::endl;
+	fprintf(stderr, "You need %5.1f GB memory\n", size*size*sizeof(double)/double(1024*1024*1024));
 	abort();
     }
     try {
@@ -1590,9 +1641,9 @@ solveLinApprox_Star(std::vector<Obs::Ptr>& o, std::vector<Obs::Ptr>& s, int nsta
 	abort();
     }
 
-    for (long j = 0; j < size; j++) {
+    for (ExpType j = 0; j < size; j++) {
 	b_data[j] = 0.0;
-	for (long i = 0; i < size; i++) {
+	for (ExpType i = 0; i < size; i++) {
 	    a_data[i+j*size] = 0.0;
 	}
     }
@@ -1601,6 +1652,9 @@ solveLinApprox_Star(std::vector<Obs::Ptr>& o, std::vector<Obs::Ptr>& s, int nsta
     double *pv = new double[ncoeff];
 
     int numObsGood = 0, numStarGood = 0;
+
+    double isx2 = 1.0;
+    double isy2 = 1.0;
 
     if (solveCcd) {
 	for (int i = 0; i < nobs; i++) {
@@ -1628,55 +1682,59 @@ solveLinApprox_Star(std::vector<Obs::Ptr>& o, std::vector<Obs::Ptr>& s, int nsta
 		Dx += a[o[i]->iexp][k] * pow(o[i]->u, xorder[k]-1) * pow(o[i]->v, yorder[k]-1) * (-xorder[k]*o[i]->v*o[i]->v0+yorder[k]*o[i]->u*o[i]->u0);
 		Dy += b[o[i]->iexp][k] * pow(o[i]->u, xorder[k]-1) * pow(o[i]->v, yorder[k]-1) * (-xorder[k]*o[i]->v*o[i]->v0+yorder[k]*o[i]->u*o[i]->u0);
 	    }
+	    double dxi  = Bx * o[i]->xerr + Cx * o[i]->yerr;
+	    double deta = By * o[i]->xerr + Cy * o[i]->yerr;
+	    isx2 = 1.0 / (pow(dxi,  2) + pow(catRMS, 2));
+	    isy2 = 1.0 / (pow(deta, 2) + pow(catRMS, 2));
 
 	    for (int k = 0; k < ncoeff; k++) {
-		b_data[k+       ncoeff*2*o[i]->iexp] += Ax * pu[k] * pv[k];
-		b_data[k+ncoeff+ncoeff*2*o[i]->iexp] += Ay * pu[k] * pv[k];
+		b_data[k+       ncoeff*2*o[i]->jexp] += Ax * pu[k] * pv[k] * isx2;
+		b_data[k+ncoeff+ncoeff*2*o[i]->jexp] += Ay * pu[k] * pv[k] * isy2;
 		// coeff x coeff
 		for (int j = 0; j < ncoeff; j++) {
-		    a_data[j+       ncoeff*2*o[i]->iexp+(k+       ncoeff*2*o[i]->iexp)*size] += pu[j] * pv[j] * pu[k] * pv[k];
-		    a_data[j+ncoeff+ncoeff*2*o[i]->iexp+(k+ncoeff+ncoeff*2*o[i]->iexp)*size] += pu[j] * pv[j] * pu[k] * pv[k];
+		    a_data[j+       ncoeff*2*o[i]->jexp+(k+       ncoeff*2*o[i]->jexp)*size] += pu[j] * pv[j] * pu[k] * pv[k] * isx2;
+		    a_data[j+ncoeff+ncoeff*2*o[i]->jexp+(k+ncoeff+ncoeff*2*o[i]->jexp)*size] += pu[j] * pv[j] * pu[k] * pv[k] * isy2;
 		}
 
 		// coeff x chip
-		a_data[k+       ncoeff*2*o[i]->iexp+(ncoeff*2*nexp+o[i]->ichip*np  )*size] += Bx * pu[k] * pv[k];
-		a_data[k+       ncoeff*2*o[i]->iexp+(ncoeff*2*nexp+o[i]->ichip*np+1)*size] += Cx * pu[k] * pv[k];
-		a_data[k+ncoeff+ncoeff*2*o[i]->iexp+(ncoeff*2*nexp+o[i]->ichip*np  )*size] += By * pu[k] * pv[k];
-		a_data[k+ncoeff+ncoeff*2*o[i]->iexp+(ncoeff*2*nexp+o[i]->ichip*np+1)*size] += Cy * pu[k] * pv[k];
-		a_data[ncoeff*2*nexp+o[i]->ichip*np  +(k+       ncoeff*2*o[i]->iexp)*size] += Bx * pu[k] * pv[k];
-		a_data[ncoeff*2*nexp+o[i]->ichip*np+1+(k+       ncoeff*2*o[i]->iexp)*size] += Cx * pu[k] * pv[k];
-		a_data[ncoeff*2*nexp+o[i]->ichip*np  +(k+ncoeff+ncoeff*2*o[i]->iexp)*size] += By * pu[k] * pv[k];
-		a_data[ncoeff*2*nexp+o[i]->ichip*np+1+(k+ncoeff+ncoeff*2*o[i]->iexp)*size] += Cy * pu[k] * pv[k];
+		a_data[k+       ncoeff*2*o[i]->jexp+(ncoeff*2*nexp+o[i]->jchip*np  )*size] += Bx * pu[k] * pv[k] * isx2;
+		a_data[k+       ncoeff*2*o[i]->jexp+(ncoeff*2*nexp+o[i]->jchip*np+1)*size] += Cx * pu[k] * pv[k] * isx2;
+		a_data[k+ncoeff+ncoeff*2*o[i]->jexp+(ncoeff*2*nexp+o[i]->jchip*np  )*size] += By * pu[k] * pv[k] * isy2;
+		a_data[k+ncoeff+ncoeff*2*o[i]->jexp+(ncoeff*2*nexp+o[i]->jchip*np+1)*size] += Cy * pu[k] * pv[k] * isy2;
+		a_data[ncoeff*2*nexp+o[i]->jchip*np  +(k+       ncoeff*2*o[i]->jexp)*size] += Bx * pu[k] * pv[k] * isx2;
+		a_data[ncoeff*2*nexp+o[i]->jchip*np+1+(k+       ncoeff*2*o[i]->jexp)*size] += Cx * pu[k] * pv[k] * isx2;
+		a_data[ncoeff*2*nexp+o[i]->jchip*np  +(k+ncoeff+ncoeff*2*o[i]->jexp)*size] += By * pu[k] * pv[k] * isy2;
+		a_data[ncoeff*2*nexp+o[i]->jchip*np+1+(k+ncoeff+ncoeff*2*o[i]->jexp)*size] += Cy * pu[k] * pv[k] * isy2;
 		if (allowRotation) {
-		    a_data[k+       ncoeff*2*o[i]->iexp+(ncoeff*2*nexp+o[i]->ichip*np+2)*size] += Dx * pu[k] * pv[k];
-		    a_data[k+ncoeff+ncoeff*2*o[i]->iexp+(ncoeff*2*nexp+o[i]->ichip*np+2)*size] += Dy * pu[k] * pv[k];
-		    a_data[ncoeff*2*nexp+o[i]->ichip*np+2+(k+       ncoeff*2*o[i]->iexp)*size] += Dx * pu[k] * pv[k];
-		    a_data[ncoeff*2*nexp+o[i]->ichip*np+2+(k+ncoeff+ncoeff*2*o[i]->iexp)*size] += Dy * pu[k] * pv[k];
+		    a_data[k+       ncoeff*2*o[i]->jexp+(ncoeff*2*nexp+o[i]->jchip*np+2)*size] += Dx * pu[k] * pv[k] * isx2;
+		    a_data[k+ncoeff+ncoeff*2*o[i]->jexp+(ncoeff*2*nexp+o[i]->jchip*np+2)*size] += Dy * pu[k] * pv[k] * isy2;
+		    a_data[ncoeff*2*nexp+o[i]->jchip*np+2+(k+       ncoeff*2*o[i]->jexp)*size] += Dx * pu[k] * pv[k] * isx2;
+		    a_data[ncoeff*2*nexp+o[i]->jchip*np+2+(k+ncoeff+ncoeff*2*o[i]->jexp)*size] += Dy * pu[k] * pv[k] * isy2;
 		}
 	    }
 
 	    // chip x chip
-	    a_data[ncoeff*2*nexp+o[i]->ichip*np  +(ncoeff*2*nexp+o[i]->ichip*np  )*size] += Bx * Bx + By * By;
-	    a_data[ncoeff*2*nexp+o[i]->ichip*np  +(ncoeff*2*nexp+o[i]->ichip*np+1)*size] += Bx * Cx + By * Cy;
-	    a_data[ncoeff*2*nexp+o[i]->ichip*np+1+(ncoeff*2*nexp+o[i]->ichip*np  )*size] += Cx * Bx + Cy * By;
-	    a_data[ncoeff*2*nexp+o[i]->ichip*np+1+(ncoeff*2*nexp+o[i]->ichip*np+1)*size] += Cx * Cx + Cy * Cy;
+	    a_data[ncoeff*2*nexp+o[i]->jchip*np  +(ncoeff*2*nexp+o[i]->jchip*np  )*size] += Bx * Bx * isx2 + By * By * isy2;
+	    a_data[ncoeff*2*nexp+o[i]->jchip*np  +(ncoeff*2*nexp+o[i]->jchip*np+1)*size] += Bx * Cx * isx2 + By * Cy * isy2;
+	    a_data[ncoeff*2*nexp+o[i]->jchip*np+1+(ncoeff*2*nexp+o[i]->jchip*np  )*size] += Cx * Bx * isx2 + Cy * By * isy2;
+	    a_data[ncoeff*2*nexp+o[i]->jchip*np+1+(ncoeff*2*nexp+o[i]->jchip*np+1)*size] += Cx * Cx * isx2 + Cy * Cy * isy2;
 	    if (allowRotation) {
-		a_data[ncoeff*2*nexp+o[i]->ichip*np  +(ncoeff*2*nexp+o[i]->ichip*np+2)*size] += Bx * Dx + By * Dy;
-		a_data[ncoeff*2*nexp+o[i]->ichip*np+1+(ncoeff*2*nexp+o[i]->ichip*np+2)*size] += Cx * Dx + Cy * Dy;
-		a_data[ncoeff*2*nexp+o[i]->ichip*np+2+(ncoeff*2*nexp+o[i]->ichip*np  )*size] += Dx * Bx + Dy * By;
-		a_data[ncoeff*2*nexp+o[i]->ichip*np+2+(ncoeff*2*nexp+o[i]->ichip*np+1)*size] += Dx * Cx + Dy * Cy;
-		a_data[ncoeff*2*nexp+o[i]->ichip*np+2+(ncoeff*2*nexp+o[i]->ichip*np+2)*size] += Dx * Dx + Dy * Dy;
+		a_data[ncoeff*2*nexp+o[i]->jchip*np  +(ncoeff*2*nexp+o[i]->jchip*np+2)*size] += Bx * Dx * isx2 + By * Dy * isy2;
+		a_data[ncoeff*2*nexp+o[i]->jchip*np+1+(ncoeff*2*nexp+o[i]->jchip*np+2)*size] += Cx * Dx * isx2 + Cy * Dy * isy2;
+		a_data[ncoeff*2*nexp+o[i]->jchip*np+2+(ncoeff*2*nexp+o[i]->jchip*np  )*size] += Dx * Bx * isx2 + Dy * By * isy2;
+		a_data[ncoeff*2*nexp+o[i]->jchip*np+2+(ncoeff*2*nexp+o[i]->jchip*np+1)*size] += Dx * Cx * isx2 + Dy * Cy * isy2;
+		a_data[ncoeff*2*nexp+o[i]->jchip*np+2+(ncoeff*2*nexp+o[i]->jchip*np+2)*size] += Dx * Dx * isx2 + Dy * Dy * isy2;
 	    }
 
-	    b_data[ncoeff*2*nexp+o[i]->ichip*np  ] += Ax * Bx + Ay * By;
-	    b_data[ncoeff*2*nexp+o[i]->ichip*np+1] += Ax * Cx + Ay * Cy;
+	    b_data[ncoeff*2*nexp+o[i]->jchip*np  ] += Ax * Bx * isx2 + Ay * By * isy2;
+	    b_data[ncoeff*2*nexp+o[i]->jchip*np+1] += Ax * Cx * isx2 + Ay * Cy * isy2;
 	    if (allowRotation) {
-		b_data[ncoeff*2*nexp+o[i]->ichip*np+2] += Ax * Dx + Ay * Dy;
+		b_data[ncoeff*2*nexp+o[i]->jchip*np+2] += Ax * Dx * isx2 + Ay * Dy * isy2;
 	    }
 	}
 
 	for (int i = 0; i < nSobs; i++) {
-	    if (!s[i]->good) continue;
+	    if (!s[i]->good || s[i]->jstar == -1) continue;
             ++numStarGood;
 	    double Ax = s[i]->xi;
 	    double Ay = s[i]->eta;
@@ -1700,86 +1758,90 @@ solveLinApprox_Star(std::vector<Obs::Ptr>& o, std::vector<Obs::Ptr>& s, int nsta
 		Dx += a[s[i]->iexp][k] * pow(s[i]->u, xorder[k]-1) * pow(s[i]->v, yorder[k]-1) * (-xorder[k]*s[i]->v*s[i]->v0+yorder[k]*s[i]->u*s[i]->u0);
 		Dy += b[s[i]->iexp][k] * pow(s[i]->u, xorder[k]-1) * pow(s[i]->v, yorder[k]-1) * (-xorder[k]*s[i]->v*s[i]->v0+yorder[k]*s[i]->u*s[i]->u0);
 	    }
+	    double dxi  = Bx * s[i]->xerr + Cx * s[i]->yerr;
+	    double deta = By * s[i]->xerr + Cy * s[i]->yerr;
+	    isx2 = 1.0 / pow(dxi,  2);
+	    isy2 = 1.0 / pow(deta, 2);
 
 	    for (int k = 0; k < ncoeff; k++) {
-		b_data[k+       ncoeff*2*s[i]->iexp] += Ax * pu[k] * pv[k];
-		b_data[k+ncoeff+ncoeff*2*s[i]->iexp] += Ay * pu[k] * pv[k];
+		b_data[k+       ncoeff*2*s[i]->jexp] += Ax * pu[k] * pv[k] * isx2;
+		b_data[k+ncoeff+ncoeff*2*s[i]->jexp] += Ay * pu[k] * pv[k] * isy2;
 		// coeff x coeff
 		for (int j = 0; j < ncoeff; j++) {
-		    a_data[j+       ncoeff*2*s[i]->iexp+(k+       ncoeff*2*s[i]->iexp)*size] += pu[j] * pv[j] * pu[k] * pv[k];
-		    a_data[j+ncoeff+ncoeff*2*s[i]->iexp+(k+ncoeff+ncoeff*2*s[i]->iexp)*size] += pu[j] * pv[j] * pu[k] * pv[k];
+		    a_data[j+       ncoeff*2*s[i]->jexp+(k+       ncoeff*2*s[i]->jexp)*size] += pu[j] * pv[j] * pu[k] * pv[k] * isx2;
+		    a_data[j+ncoeff+ncoeff*2*s[i]->jexp+(k+ncoeff+ncoeff*2*s[i]->jexp)*size] += pu[j] * pv[j] * pu[k] * pv[k] * isy2;
 		}
 
 		// coeff x chip
-		a_data[k+       ncoeff*2*s[i]->iexp+(ncoeff*2*nexp+s[i]->ichip*np  )*size] += Bx * pu[k] * pv[k];
-		a_data[k+       ncoeff*2*s[i]->iexp+(ncoeff*2*nexp+s[i]->ichip*np+1)*size] += Cx * pu[k] * pv[k];
-		a_data[k+ncoeff+ncoeff*2*s[i]->iexp+(ncoeff*2*nexp+s[i]->ichip*np  )*size] += By * pu[k] * pv[k];
-		a_data[k+ncoeff+ncoeff*2*s[i]->iexp+(ncoeff*2*nexp+s[i]->ichip*np+1)*size] += Cy * pu[k] * pv[k];
-		a_data[ncoeff*2*nexp+s[i]->ichip*np  +(k+       ncoeff*2*s[i]->iexp)*size] += Bx * pu[k] * pv[k];
-		a_data[ncoeff*2*nexp+s[i]->ichip*np+1+(k+       ncoeff*2*s[i]->iexp)*size] += Cx * pu[k] * pv[k];
-		a_data[ncoeff*2*nexp+s[i]->ichip*np  +(k+ncoeff+ncoeff*2*s[i]->iexp)*size] += By * pu[k] * pv[k];
-		a_data[ncoeff*2*nexp+s[i]->ichip*np+1+(k+ncoeff+ncoeff*2*s[i]->iexp)*size] += Cy * pu[k] * pv[k];
+		a_data[k+       ncoeff*2*s[i]->jexp+(ncoeff*2*nexp+s[i]->jchip*np  )*size] += Bx * pu[k] * pv[k] * isx2;
+		a_data[k+       ncoeff*2*s[i]->jexp+(ncoeff*2*nexp+s[i]->jchip*np+1)*size] += Cx * pu[k] * pv[k] * isx2;
+		a_data[k+ncoeff+ncoeff*2*s[i]->jexp+(ncoeff*2*nexp+s[i]->jchip*np  )*size] += By * pu[k] * pv[k] * isy2;
+		a_data[k+ncoeff+ncoeff*2*s[i]->jexp+(ncoeff*2*nexp+s[i]->jchip*np+1)*size] += Cy * pu[k] * pv[k] * isy2;
+		a_data[ncoeff*2*nexp+s[i]->jchip*np  +(k+       ncoeff*2*s[i]->jexp)*size] += Bx * pu[k] * pv[k] * isx2;
+		a_data[ncoeff*2*nexp+s[i]->jchip*np+1+(k+       ncoeff*2*s[i]->jexp)*size] += Cx * pu[k] * pv[k] * isx2;
+		a_data[ncoeff*2*nexp+s[i]->jchip*np  +(k+ncoeff+ncoeff*2*s[i]->jexp)*size] += By * pu[k] * pv[k] * isy2;
+		a_data[ncoeff*2*nexp+s[i]->jchip*np+1+(k+ncoeff+ncoeff*2*s[i]->jexp)*size] += Cy * pu[k] * pv[k] * isy2;
 		if (allowRotation) {
-		    a_data[k+       ncoeff*2*s[i]->iexp+(ncoeff*2*nexp+s[i]->ichip*np+2)*size] += Dx * pu[k] * pv[k];
-		    a_data[k+ncoeff+ncoeff*2*s[i]->iexp+(ncoeff*2*nexp+s[i]->ichip*np+2)*size] += Dy * pu[k] * pv[k];
-		    a_data[ncoeff*2*nexp+s[i]->ichip*np+2+(k+       ncoeff*2*s[i]->iexp)*size] += Dx * pu[k] * pv[k];
-		    a_data[ncoeff*2*nexp+s[i]->ichip*np+2+(k+ncoeff+ncoeff*2*s[i]->iexp)*size] += Dy * pu[k] * pv[k];
+		    a_data[k+       ncoeff*2*s[i]->jexp+(ncoeff*2*nexp+s[i]->jchip*np+2)*size] += Dx * pu[k] * pv[k] * isx2;
+		    a_data[k+ncoeff+ncoeff*2*s[i]->jexp+(ncoeff*2*nexp+s[i]->jchip*np+2)*size] += Dy * pu[k] * pv[k] * isy2;
+		    a_data[ncoeff*2*nexp+s[i]->jchip*np+2+(k+       ncoeff*2*s[i]->jexp)*size] += Dx * pu[k] * pv[k] * isx2;
+		    a_data[ncoeff*2*nexp+s[i]->jchip*np+2+(k+ncoeff+ncoeff*2*s[i]->jexp)*size] += Dy * pu[k] * pv[k] * isy2;
 		}
 
 		// coeff x star
-		a_data[k+       ncoeff*2*s[i]->iexp+(size0+s[i]->jstar*2  )*size] -= s[i]->xi_a  * pu[k] * pv[k];
-		a_data[k+       ncoeff*2*s[i]->iexp+(size0+s[i]->jstar*2+1)*size] -= s[i]->xi_d  * pu[k] * pv[k];
-		a_data[k+ncoeff+ncoeff*2*s[i]->iexp+(size0+s[i]->jstar*2  )*size] -= s[i]->eta_a * pu[k] * pv[k];
-		a_data[k+ncoeff+ncoeff*2*s[i]->iexp+(size0+s[i]->jstar*2+1)*size] -= s[i]->eta_d * pu[k] * pv[k];
-		a_data[size0+s[i]->jstar*2  +(k+       ncoeff*2*s[i]->iexp)*size] -= s[i]->xi_a  * pu[k] * pv[k];
-		a_data[size0+s[i]->jstar*2+1+(k+       ncoeff*2*s[i]->iexp)*size] -= s[i]->xi_d  * pu[k] * pv[k];
-		a_data[size0+s[i]->jstar*2  +(k+ncoeff+ncoeff*2*s[i]->iexp)*size] -= s[i]->eta_a * pu[k] * pv[k];
-		a_data[size0+s[i]->jstar*2+1+(k+ncoeff+ncoeff*2*s[i]->iexp)*size] -= s[i]->eta_d * pu[k] * pv[k];
+		a_data[k+       ncoeff*2*s[i]->jexp+(size0+s[i]->jstar*2  )*size] -= s[i]->xi_a  * pu[k] * pv[k] * isx2;
+		a_data[k+       ncoeff*2*s[i]->jexp+(size0+s[i]->jstar*2+1)*size] -= s[i]->xi_d  * pu[k] * pv[k] * isx2;
+		a_data[k+ncoeff+ncoeff*2*s[i]->jexp+(size0+s[i]->jstar*2  )*size] -= s[i]->eta_a * pu[k] * pv[k] * isy2;
+		a_data[k+ncoeff+ncoeff*2*s[i]->jexp+(size0+s[i]->jstar*2+1)*size] -= s[i]->eta_d * pu[k] * pv[k] * isy2;
+		a_data[size0+s[i]->jstar*2  +(k+       ncoeff*2*s[i]->jexp)*size] -= s[i]->xi_a  * pu[k] * pv[k] * isx2;
+		a_data[size0+s[i]->jstar*2+1+(k+       ncoeff*2*s[i]->jexp)*size] -= s[i]->xi_d  * pu[k] * pv[k] * isx2;
+		a_data[size0+s[i]->jstar*2  +(k+ncoeff+ncoeff*2*s[i]->jexp)*size] -= s[i]->eta_a * pu[k] * pv[k] * isy2;
+		a_data[size0+s[i]->jstar*2+1+(k+ncoeff+ncoeff*2*s[i]->jexp)*size] -= s[i]->eta_d * pu[k] * pv[k] * isy2;
 	    }
 
 	    // chip x chip
-	    a_data[ncoeff*2*nexp+s[i]->ichip*np  +(ncoeff*2*nexp+s[i]->ichip*np  )*size] += Bx * Bx + By * By;
-	    a_data[ncoeff*2*nexp+s[i]->ichip*np  +(ncoeff*2*nexp+s[i]->ichip*np+1)*size] += Bx * Cx + By * Cy;
-	    a_data[ncoeff*2*nexp+s[i]->ichip*np+1+(ncoeff*2*nexp+s[i]->ichip*np  )*size] += Cx * Bx + Cy * By;
-	    a_data[ncoeff*2*nexp+s[i]->ichip*np+1+(ncoeff*2*nexp+s[i]->ichip*np+1)*size] += Cx * Cx + Cy * Cy;
+	    a_data[ncoeff*2*nexp+s[i]->jchip*np  +(ncoeff*2*nexp+s[i]->jchip*np  )*size] += Bx * Bx * isx2 + By * By * isy2;
+	    a_data[ncoeff*2*nexp+s[i]->jchip*np  +(ncoeff*2*nexp+s[i]->jchip*np+1)*size] += Bx * Cx * isx2 + By * Cy * isy2;
+	    a_data[ncoeff*2*nexp+s[i]->jchip*np+1+(ncoeff*2*nexp+s[i]->jchip*np  )*size] += Cx * Bx * isx2 + Cy * By * isy2;
+	    a_data[ncoeff*2*nexp+s[i]->jchip*np+1+(ncoeff*2*nexp+s[i]->jchip*np+1)*size] += Cx * Cx * isx2 + Cy * Cy * isy2;
 	    if (allowRotation) {
-		a_data[ncoeff*2*nexp+s[i]->ichip*np  +(ncoeff*2*nexp+s[i]->ichip*np+2)*size] += Bx * Dx + By * Dy;
-		a_data[ncoeff*2*nexp+s[i]->ichip*np+1+(ncoeff*2*nexp+s[i]->ichip*np+2)*size] += Cx * Dx + Cy * Dy;
-		a_data[ncoeff*2*nexp+s[i]->ichip*np+2+(ncoeff*2*nexp+s[i]->ichip*np  )*size] += Dx * Bx + Dy * By;
-		a_data[ncoeff*2*nexp+s[i]->ichip*np+2+(ncoeff*2*nexp+s[i]->ichip*np+1)*size] += Dx * Cx + Dy * Cy;
-		a_data[ncoeff*2*nexp+s[i]->ichip*np+2+(ncoeff*2*nexp+s[i]->ichip*np+2)*size] += Dx * Dx + Dy * Dy;
+		a_data[ncoeff*2*nexp+s[i]->jchip*np  +(ncoeff*2*nexp+s[i]->jchip*np+2)*size] += Bx * Dx * isx2 + By * Dy * isy2;
+		a_data[ncoeff*2*nexp+s[i]->jchip*np+1+(ncoeff*2*nexp+s[i]->jchip*np+2)*size] += Cx * Dx * isx2 + Cy * Dy * isy2;
+		a_data[ncoeff*2*nexp+s[i]->jchip*np+2+(ncoeff*2*nexp+s[i]->jchip*np  )*size] += Dx * Bx * isx2 + Dy * By * isy2;
+		a_data[ncoeff*2*nexp+s[i]->jchip*np+2+(ncoeff*2*nexp+s[i]->jchip*np+1)*size] += Dx * Cx * isx2 + Dy * Cy * isy2;
+		a_data[ncoeff*2*nexp+s[i]->jchip*np+2+(ncoeff*2*nexp+s[i]->jchip*np+2)*size] += Dx * Dx * isx2 + Dy * Dy * isy2;
 	    }
 
 	    // chip x star
-	    a_data[ncoeff*2*nexp+s[i]->ichip*np  +(size0+s[i]->jstar*2  )*size] -= Bx * s[i]->xi_a + By * s[i]->eta_a;
-	    a_data[ncoeff*2*nexp+s[i]->ichip*np  +(size0+s[i]->jstar*2+1)*size] -= Bx * s[i]->xi_d + By * s[i]->eta_d;
-	    a_data[ncoeff*2*nexp+s[i]->ichip*np+1+(size0+s[i]->jstar*2  )*size] -= Cx * s[i]->xi_a + Cy * s[i]->eta_a;
-	    a_data[ncoeff*2*nexp+s[i]->ichip*np+1+(size0+s[i]->jstar*2+1)*size] -= Cx * s[i]->xi_d + Cy * s[i]->eta_d;
-	    a_data[size0+s[i]->jstar*2  +(ncoeff*2*nexp+s[i]->ichip*np  )*size] -= Bx * s[i]->xi_a + By * s[i]->eta_a;
-	    a_data[size0+s[i]->jstar*2+1+(ncoeff*2*nexp+s[i]->ichip*np  )*size] -= Bx * s[i]->xi_d + By * s[i]->eta_d;
-	    a_data[size0+s[i]->jstar*2  +(ncoeff*2*nexp+s[i]->ichip*np+1)*size] -= Cx * s[i]->xi_a + Cy * s[i]->eta_a;
-	    a_data[size0+s[i]->jstar*2+1+(ncoeff*2*nexp+s[i]->ichip*np+1)*size] -= Cx * s[i]->xi_d + Cy * s[i]->eta_d;
+	    a_data[ncoeff*2*nexp+s[i]->jchip*np  +(size0+s[i]->jstar*2  )*size] -= Bx * s[i]->xi_a * isx2 + By * s[i]->eta_a * isy2;
+	    a_data[ncoeff*2*nexp+s[i]->jchip*np  +(size0+s[i]->jstar*2+1)*size] -= Bx * s[i]->xi_d * isx2 + By * s[i]->eta_d * isy2;
+	    a_data[ncoeff*2*nexp+s[i]->jchip*np+1+(size0+s[i]->jstar*2  )*size] -= Cx * s[i]->xi_a * isx2 + Cy * s[i]->eta_a * isy2;
+	    a_data[ncoeff*2*nexp+s[i]->jchip*np+1+(size0+s[i]->jstar*2+1)*size] -= Cx * s[i]->xi_d * isx2 + Cy * s[i]->eta_d * isy2;
+	    a_data[size0+s[i]->jstar*2  +(ncoeff*2*nexp+s[i]->jchip*np  )*size] -= Bx * s[i]->xi_a * isx2 + By * s[i]->eta_a * isy2;
+	    a_data[size0+s[i]->jstar*2+1+(ncoeff*2*nexp+s[i]->jchip*np  )*size] -= Bx * s[i]->xi_d * isx2 + By * s[i]->eta_d * isy2;
+	    a_data[size0+s[i]->jstar*2  +(ncoeff*2*nexp+s[i]->jchip*np+1)*size] -= Cx * s[i]->xi_a * isx2 + Cy * s[i]->eta_a * isy2;
+	    a_data[size0+s[i]->jstar*2+1+(ncoeff*2*nexp+s[i]->jchip*np+1)*size] -= Cx * s[i]->xi_d * isx2 + Cy * s[i]->eta_d * isy2;
 	    if (allowRotation) {
-		a_data[ncoeff*2*nexp+s[i]->ichip*np+2+(size0+s[i]->jstar*2  )*size] -= Dx * s[i]->xi_a + Dy * s[i]->eta_a;
-		a_data[ncoeff*2*nexp+s[i]->ichip*np+2+(size0+s[i]->jstar*2+1)*size] -= Dx * s[i]->xi_d + Dy * s[i]->eta_d;
-		a_data[size0+s[i]->jstar*2  +(ncoeff*2*nexp+s[i]->ichip*np+2)*size] -= Dx * s[i]->xi_a + Dy * s[i]->eta_a;
-		a_data[size0+s[i]->jstar*2+1+(ncoeff*2*nexp+s[i]->ichip*np+2)*size] -= Dx * s[i]->xi_d + Dy * s[i]->eta_d;
+		a_data[ncoeff*2*nexp+s[i]->jchip*np+2+(size0+s[i]->jstar*2  )*size] -= Dx * s[i]->xi_a * isx2 + Dy * s[i]->eta_a * isy2;
+		a_data[ncoeff*2*nexp+s[i]->jchip*np+2+(size0+s[i]->jstar*2+1)*size] -= Dx * s[i]->xi_d * isx2 + Dy * s[i]->eta_d * isy2;
+		a_data[size0+s[i]->jstar*2  +(ncoeff*2*nexp+s[i]->jchip*np+2)*size] -= Dx * s[i]->xi_a * isx2 + Dy * s[i]->eta_a * isy2;
+		a_data[size0+s[i]->jstar*2+1+(ncoeff*2*nexp+s[i]->jchip*np+2)*size] -= Dx * s[i]->xi_d * isx2 + Dy * s[i]->eta_d * isy2;
 	    }
 
 	    // star x star
-	    a_data[size0+s[i]->jstar*2  +(size0+s[i]->jstar*2  )*size] += s[i]->xi_a * s[i]->xi_a + s[i]->eta_a * s[i]->eta_a;
-	    a_data[size0+s[i]->jstar*2  +(size0+s[i]->jstar*2+1)*size] += s[i]->xi_a * s[i]->xi_d + s[i]->eta_a * s[i]->eta_d;
-	    a_data[size0+s[i]->jstar*2+1+(size0+s[i]->jstar*2  )*size] += s[i]->xi_d * s[i]->xi_a + s[i]->eta_d * s[i]->eta_a;
-	    a_data[size0+s[i]->jstar*2+1+(size0+s[i]->jstar*2+1)*size] += s[i]->xi_d * s[i]->xi_d + s[i]->eta_d * s[i]->eta_d;
+	    a_data[size0+s[i]->jstar*2  +(size0+s[i]->jstar*2  )*size] += s[i]->xi_a * s[i]->xi_a * isx2 + s[i]->eta_a * s[i]->eta_a * isy2;
+	    a_data[size0+s[i]->jstar*2  +(size0+s[i]->jstar*2+1)*size] += s[i]->xi_a * s[i]->xi_d * isx2 + s[i]->eta_a * s[i]->eta_d * isy2;
+	    a_data[size0+s[i]->jstar*2+1+(size0+s[i]->jstar*2  )*size] += s[i]->xi_d * s[i]->xi_a * isx2 + s[i]->eta_d * s[i]->eta_a * isy2;
+	    a_data[size0+s[i]->jstar*2+1+(size0+s[i]->jstar*2+1)*size] += s[i]->xi_d * s[i]->xi_d * isx2 + s[i]->eta_d * s[i]->eta_d * isy2;
 	    
-	    b_data[ncoeff*2*nexp+s[i]->ichip*np  ] += Ax * Bx + Ay * By;
-	    b_data[ncoeff*2*nexp+s[i]->ichip*np+1] += Ax * Cx + Ay * Cy;
+	    b_data[ncoeff*2*nexp+s[i]->jchip*np  ] += Ax * Bx * isx2 + Ay * By * isy2;
+	    b_data[ncoeff*2*nexp+s[i]->jchip*np+1] += Ax * Cx * isx2 + Ay * Cy * isy2;
 	    if (allowRotation) {
-		b_data[ncoeff*2*nexp+s[i]->ichip*np+2] += Ax * Dx + Ay * Dy;
+		b_data[ncoeff*2*nexp+s[i]->jchip*np+2] += Ax * Dx * isx2 + Ay * Dy * isy2;
 	    }
 
-	    b_data[size0+2*s[i]->jstar  ] -= Ax * s[i]->xi_a + Ay * s[i]->eta_a;
-	    b_data[size0+2*s[i]->jstar+1] -= Ax * s[i]->xi_d + Ay * s[i]->eta_d;
+	    b_data[size0+2*s[i]->jstar  ] -= Ax * s[i]->xi_a * isx2 + Ay * s[i]->eta_a * isy2;
+	    b_data[size0+2*s[i]->jstar+1] -= Ax * s[i]->xi_d * isx2 + Ay * s[i]->eta_d * isy2;
 	}
 
 	if (allowRotation) {
@@ -1795,6 +1857,10 @@ solveLinApprox_Star(std::vector<Obs::Ptr>& o, std::vector<Obs::Ptr>& s, int nsta
             ++numObsGood;
 	    double Ax = o[i]->xi;
 	    double Ay = o[i]->eta;
+	    double Bx = 0.0;
+	    double By = 0.0;
+	    double Cx = 0.0;
+	    double Cy = 0.0;
 	    for (int k = 0; k < ncoeff; k++) {
 		pu[k] = pow(o[i]->u, xorder[k]);
 		pv[k] = pow(o[i]->v, yorder[k]);
@@ -1802,24 +1868,36 @@ solveLinApprox_Star(std::vector<Obs::Ptr>& o, std::vector<Obs::Ptr>& s, int nsta
 	    for (int k = 0; k < ncoeff; k++) {
 		Ax -= a[o[i]->iexp][k] * pu[k]   * pv[k];
 		Ay -= b[o[i]->iexp][k] * pu[k]   * pv[k];
+		Bx += a[o[i]->iexp][k] * pow(o[i]->u, xorder[k]-1) * pv[k]   * xorder[k];
+		By += b[o[i]->iexp][k] * pow(o[i]->u, xorder[k]-1) * pv[k]   * xorder[k];
+		Cx += a[o[i]->iexp][k] * pu[k]   * pow(o[i]->v, yorder[k]-1) * yorder[k];
+		Cy += b[o[i]->iexp][k] * pu[k]   * pow(o[i]->v, yorder[k]-1) * yorder[k];
 	    }
+	    double dxi  = Bx * o[i]->xerr + Cx * o[i]->yerr;
+	    double deta = By * o[i]->xerr + Cy * o[i]->yerr;
+	    isx2 = 1.0 / (pow(dxi,  2) + pow(catRMS, 2));
+	    isy2 = 1.0 / (pow(deta, 2) + pow(catRMS, 2));
 
 	    for (int k = 0; k < ncoeff; k++) {
-		b_data[k+       ncoeff*2*o[i]->iexp] += Ax * pu[k] * pv[k];
-		b_data[k+ncoeff+ncoeff*2*o[i]->iexp] += Ay * pu[k] * pv[k];
+		b_data[k+       ncoeff*2*o[i]->jexp] += Ax * pu[k] * pv[k] * isx2;
+		b_data[k+ncoeff+ncoeff*2*o[i]->jexp] += Ay * pu[k] * pv[k] * isy2;
 		// coeff x coeff
 		for (int j = 0; j < ncoeff; j++) {
-		    a_data[j+       ncoeff*2*o[i]->iexp+(k+       ncoeff*2*o[i]->iexp)*size] += pu[j] * pv[j] * pu[k] * pv[k];
-		    a_data[j+ncoeff+ncoeff*2*o[i]->iexp+(k+ncoeff+ncoeff*2*o[i]->iexp)*size] += pu[j] * pv[j] * pu[k] * pv[k];
+		    a_data[j+       ncoeff*2*o[i]->jexp+(k+       ncoeff*2*o[i]->jexp)*size] += pu[j] * pv[j] * pu[k] * pv[k] * isx2;
+		    a_data[j+ncoeff+ncoeff*2*o[i]->jexp+(k+ncoeff+ncoeff*2*o[i]->jexp)*size] += pu[j] * pv[j] * pu[k] * pv[k] * isy2;
 		}
 	    }
 	}
 
 	for (int i = 0; i < nSobs; i++) {
-	    if (!s[i]->good) continue;
+	    if (!s[i]->good || s[i]->jstar == -1) continue;
             ++numStarGood;
 	    double Ax = s[i]->xi;
 	    double Ay = s[i]->eta;
+	    double Bx = 0.0;
+	    double By = 0.0;
+	    double Cx = 0.0;
+	    double Cy = 0.0;
 	    for (int k = 0; k < ncoeff; k++) {
 		pu[k] = pow(s[i]->u, xorder[k]);
 		pv[k] = pow(s[i]->v, yorder[k]);
@@ -1827,43 +1905,51 @@ solveLinApprox_Star(std::vector<Obs::Ptr>& o, std::vector<Obs::Ptr>& s, int nsta
 	    for (int k = 0; k < ncoeff; k++) {
 		Ax -= a[s[i]->iexp][k] * pu[k]   * pv[k];
 		Ay -= b[s[i]->iexp][k] * pu[k]   * pv[k];
+		Bx += a[s[i]->iexp][k] * pow(s[i]->u, xorder[k]-1) * pv[k]   * xorder[k];
+		By += b[s[i]->iexp][k] * pow(s[i]->u, xorder[k]-1) * pv[k]   * xorder[k];
+		Cx += a[s[i]->iexp][k] * pu[k]   * pow(s[i]->v, yorder[k]-1) * yorder[k];
+		Cy += b[s[i]->iexp][k] * pu[k]   * pow(s[i]->v, yorder[k]-1) * yorder[k];
 	    }
+	    double dxi  = Bx * s[i]->xerr + Cx * s[i]->yerr;
+	    double deta = By * s[i]->xerr + Cy * s[i]->yerr;
+	    isx2 = 1.0 / pow(dxi,  2);
+	    isy2 = 1.0 / pow(deta, 2);
 
 	    for (int k = 0; k < ncoeff; k++) {
-		b_data[k+       ncoeff*2*s[i]->iexp] += Ax * pu[k] * pv[k];
-		b_data[k+ncoeff+ncoeff*2*s[i]->iexp] += Ay * pu[k] * pv[k];
+		b_data[k+       ncoeff*2*s[i]->jexp] += Ax * pu[k] * pv[k] * isx2;
+		b_data[k+ncoeff+ncoeff*2*s[i]->jexp] += Ay * pu[k] * pv[k] * isy2;
 		// coeff x coeff
 		for (int j = 0; j < ncoeff; j++) {
-		    a_data[j+       ncoeff*2*s[i]->iexp+(k+       ncoeff*2*s[i]->iexp)*size] += pu[j] * pv[j] * pu[k] * pv[k];
-		    a_data[j+ncoeff+ncoeff*2*s[i]->iexp+(k+ncoeff+ncoeff*2*s[i]->iexp)*size] += pu[j] * pv[j] * pu[k] * pv[k];
+		    a_data[j+       ncoeff*2*s[i]->jexp+(k+       ncoeff*2*s[i]->jexp)*size] += pu[j] * pv[j] * pu[k] * pv[k] * isx2;
+		    a_data[j+ncoeff+ncoeff*2*s[i]->jexp+(k+ncoeff+ncoeff*2*s[i]->jexp)*size] += pu[j] * pv[j] * pu[k] * pv[k] * isy2;
 		}
 
 		// coeff x star
-		a_data[k+       ncoeff*2*s[i]->iexp+(size0+s[i]->jstar*2  )*size] -= s[i]->xi_a  * pu[k] * pv[k];
-		a_data[k+       ncoeff*2*s[i]->iexp+(size0+s[i]->jstar*2+1)*size] -= s[i]->xi_d  * pu[k] * pv[k];
-		a_data[k+ncoeff+ncoeff*2*s[i]->iexp+(size0+s[i]->jstar*2  )*size] -= s[i]->eta_a * pu[k] * pv[k];
-		a_data[k+ncoeff+ncoeff*2*s[i]->iexp+(size0+s[i]->jstar*2+1)*size] -= s[i]->eta_d * pu[k] * pv[k];
-		a_data[size0+s[i]->jstar*2  +(k+       ncoeff*2*s[i]->iexp)*size] -= s[i]->xi_a  * pu[k] * pv[k];
-		a_data[size0+s[i]->jstar*2+1+(k+       ncoeff*2*s[i]->iexp)*size] -= s[i]->xi_d  * pu[k] * pv[k];
-		a_data[size0+s[i]->jstar*2  +(k+ncoeff+ncoeff*2*s[i]->iexp)*size] -= s[i]->eta_a * pu[k] * pv[k];
-		a_data[size0+s[i]->jstar*2+1+(k+ncoeff+ncoeff*2*s[i]->iexp)*size] -= s[i]->eta_d * pu[k] * pv[k];
+		a_data[k+       ncoeff*2*s[i]->jexp+(size0+s[i]->jstar*2  )*size] -= s[i]->xi_a  * pu[k] * pv[k] * isx2;
+		a_data[k+       ncoeff*2*s[i]->jexp+(size0+s[i]->jstar*2+1)*size] -= s[i]->xi_d  * pu[k] * pv[k] * isx2;
+		a_data[k+ncoeff+ncoeff*2*s[i]->jexp+(size0+s[i]->jstar*2  )*size] -= s[i]->eta_a * pu[k] * pv[k] * isy2;
+		a_data[k+ncoeff+ncoeff*2*s[i]->jexp+(size0+s[i]->jstar*2+1)*size] -= s[i]->eta_d * pu[k] * pv[k] * isy2;
+		a_data[size0+s[i]->jstar*2  +(k+       ncoeff*2*s[i]->jexp)*size] -= s[i]->xi_a  * pu[k] * pv[k] * isx2;
+		a_data[size0+s[i]->jstar*2+1+(k+       ncoeff*2*s[i]->jexp)*size] -= s[i]->xi_d  * pu[k] * pv[k] * isx2;
+		a_data[size0+s[i]->jstar*2  +(k+ncoeff+ncoeff*2*s[i]->jexp)*size] -= s[i]->eta_a * pu[k] * pv[k] * isy2;
+		a_data[size0+s[i]->jstar*2+1+(k+ncoeff+ncoeff*2*s[i]->jexp)*size] -= s[i]->eta_d * pu[k] * pv[k] * isy2;
 	    }
 
 	    // star x star
-	    a_data[size0+s[i]->jstar*2  +(size0+s[i]->jstar*2  )*size] += s[i]->xi_a * s[i]->xi_a + s[i]->eta_a * s[i]->eta_a;
-	    a_data[size0+s[i]->jstar*2  +(size0+s[i]->jstar*2+1)*size] += s[i]->xi_a * s[i]->xi_d + s[i]->eta_a * s[i]->eta_d;
-	    a_data[size0+s[i]->jstar*2+1+(size0+s[i]->jstar*2  )*size] += s[i]->xi_d * s[i]->xi_a + s[i]->eta_d * s[i]->eta_a;
-	    a_data[size0+s[i]->jstar*2+1+(size0+s[i]->jstar*2+1)*size] += s[i]->xi_d * s[i]->xi_d + s[i]->eta_d * s[i]->eta_d;
+	    a_data[size0+s[i]->jstar*2  +(size0+s[i]->jstar*2  )*size] += s[i]->xi_a * s[i]->xi_a * isx2 + s[i]->eta_a * s[i]->eta_a * isy2;
+	    a_data[size0+s[i]->jstar*2  +(size0+s[i]->jstar*2+1)*size] += s[i]->xi_a * s[i]->xi_d * isx2 + s[i]->eta_a * s[i]->eta_d * isy2;
+	    a_data[size0+s[i]->jstar*2+1+(size0+s[i]->jstar*2  )*size] += s[i]->xi_d * s[i]->xi_a * isx2 + s[i]->eta_d * s[i]->eta_a * isy2;
+	    a_data[size0+s[i]->jstar*2+1+(size0+s[i]->jstar*2+1)*size] += s[i]->xi_d * s[i]->xi_d * isx2 + s[i]->eta_d * s[i]->eta_d * isy2;
 
-	    b_data[size0+2*s[i]->jstar  ] -= Ax * s[i]->xi_a + Ay * s[i]->eta_a;
-	    b_data[size0+2*s[i]->jstar+1] -= Ax * s[i]->xi_d + Ay * s[i]->eta_d;
+	    b_data[size0+2*s[i]->jstar  ] -= Ax * s[i]->xi_a * isx2 + Ay * s[i]->eta_a * isy2;
+	    b_data[size0+2*s[i]->jstar+1] -= Ax * s[i]->xi_d * isx2 + Ay * s[i]->eta_d * isy2;
 	}
     }
 
     std::cout << "Number good: " << numObsGood << ", " << numStarGood << std::endl;
 
-    delete [] a;
-    delete [] b;
+//    delete [] a;
+//    delete [] b;
 
     double *coeff = solveMatrix(size, a_data, b_data);
 
@@ -1891,12 +1977,12 @@ double *fluxFit_rel(std::vector<Obs::Ptr> &m,
 	num[i] = 0;
     }
     for (int i = 0; i < nMobs; i++) {
-	if (m[i]->good && m[i]->mag != -9999) {
+	if (m[i]->good && m[i]->mag != -9999 && m[i]->err != -9999) {
 	    num[m[i]->istar] += 1;
 	}
     }
     for (int i = 0; i < nSobs; i++) {
-	if (s[i]->good && s[i]->mag != -9999) {
+	if (s[i]->good && s[i]->mag != -9999 && s[i]->err != -9999) {
 	    num[nmatch+s[i]->istar] += 1;
 	}
     }
@@ -1949,8 +2035,9 @@ double *fluxFit_rel(std::vector<Obs::Ptr> &m,
 	b_data[i] = 0.0;
     }
 
+    double is2 = 1.0;
     for (int i = 0; i < nMobs; i++) {
-	if (m[i]->jstar == -1 || !m[i]->good || m[i]->mag == -9999) continue;
+	if (m[i]->jstar == -1 || !m[i]->good || m[i]->mag == -9999 || m[i]->err == -9999) continue;
 
 	if (p->chebyshev) {
 	   for (int k = 0; k < ncoeff; k++) {
@@ -1963,47 +2050,49 @@ double *fluxFit_rel(std::vector<Obs::Ptr> &m,
 	      pv[k] = pow(m[i]->v/v_max, yorder[k]);
 	   }
 	}
+ 
+	is2 = 1.0 / pow(m[i]->err, 2);
 
-	a_data[m[i]->iexp*ndim+m[i]->iexp] -= 1;
-	a_data[m[i]->iexp*ndim+(nexp+m[i]->ichip)] -= 1;
+	a_data[m[i]->jexp*ndim+m[i]->jexp] -= is2;
+	a_data[m[i]->jexp*ndim+(nexp+m[i]->jchip)] -= is2;
 	for (int k = 0; k < ncoeff; k++) {
-	   a_data[m[i]->iexp*ndim+(nexp+nchip+k)] -= pu[k] * pv[k];
+	   a_data[m[i]->jexp*ndim+(nexp+nchip+k)] -= pu[k] * pv[k] * is2;
 	}
-	a_data[m[i]->iexp*ndim+(nexp+nchip+ncoeff+m[i]->jstar)] += 1;
+	a_data[m[i]->jexp*ndim+(nexp+nchip+ncoeff+m[i]->jstar)] += is2;
 
-	a_data[(nexp+m[i]->ichip)*ndim+m[i]->iexp] -= 1;
-	a_data[(nexp+m[i]->ichip)*ndim+(nexp+m[i]->ichip)] -= 1;
+	a_data[(nexp+m[i]->jchip)*ndim+m[i]->jexp] -= is2;
+	a_data[(nexp+m[i]->jchip)*ndim+(nexp+m[i]->jchip)] -= is2;
 	for (int k = 0; k < ncoeff; k++) {
-	   a_data[(nexp+m[i]->ichip)*ndim+(nexp+nchip+k)] -= pu[k] * pv[k];
+	   a_data[(nexp+m[i]->jchip)*ndim+(nexp+nchip+k)] -= pu[k] * pv[k] * is2;
 	}
-	a_data[(nexp+m[i]->ichip)*ndim+(nexp+nchip+ncoeff+m[i]->jstar)] += 1;
+	a_data[(nexp+m[i]->jchip)*ndim+(nexp+nchip+ncoeff+m[i]->jstar)] += is2;
 
 	for (int j = 0; j < ncoeff; j++) {
-	   a_data[(nexp+nchip+j)*ndim+m[i]->iexp] -= pu[j] * pv[j];
-	   a_data[(nexp+nchip+j)*ndim+(nexp+m[i]->ichip)] -= pu[j] * pv[j];
+	   a_data[(nexp+nchip+j)*ndim+m[i]->jexp] -= pu[j] * pv[j] * is2;
+	   a_data[(nexp+nchip+j)*ndim+(nexp+m[i]->jchip)] -= pu[j] * pv[j] * is2;
 	   for (int k = 0; k < ncoeff; k++) {
 	      a_data[(nexp+nchip+j)*ndim+(nexp+nchip+k)] -= pu[j] * pv[j] * 
-		                                            pu[k] * pv[k];
+		                                            pu[k] * pv[k] * is2;
 	   }
-	   a_data[(nexp+nchip+j)*ndim+(nexp+nchip+ncoeff+m[i]->jstar)] += pu[j] * pv[j];
+	   a_data[(nexp+nchip+j)*ndim+(nexp+nchip+ncoeff+m[i]->jstar)] += pu[j] * pv[j] * is2;
 	}
 
-	a_data[(nexp+nchip+ncoeff+m[i]->jstar)*ndim+m[i]->iexp] += 1;
-	a_data[(nexp+nchip+ncoeff+m[i]->jstar)*ndim+(nexp+m[i]->ichip)] += 1;
+	a_data[(nexp+nchip+ncoeff+m[i]->jstar)*ndim+m[i]->jexp] += is2;
+	a_data[(nexp+nchip+ncoeff+m[i]->jstar)*ndim+(nexp+m[i]->jchip)] += is2;
 	for (int k = 0; k < ncoeff; k++) {
-	   a_data[(nexp+nchip+ncoeff+m[i]->jstar)*ndim+(nexp+nchip+k)] += pu[k] * pv[k];
+	   a_data[(nexp+nchip+ncoeff+m[i]->jstar)*ndim+(nexp+nchip+k)] += pu[k] * pv[k] * is2;
 	}
-	a_data[(nexp+nchip+ncoeff+m[i]->jstar)*ndim+(nexp+nchip+ncoeff+m[i]->jstar)] -= 1;
+	a_data[(nexp+nchip+ncoeff+m[i]->jstar)*ndim+(nexp+nchip+ncoeff+m[i]->jstar)] -= is2;
 
-	b_data[m[i]->iexp] += m[i]->mag;
-	b_data[nexp+m[i]->ichip] += m[i]->mag;
+	b_data[m[i]->jexp] += m[i]->mag * is2;
+	b_data[nexp+m[i]->jchip] += m[i]->mag * is2;
 	for (int k = 0; k < ncoeff; k++) {
-	   b_data[nexp+nchip+k] += m[i]->mag * pu[k] * pv[k];
+	   b_data[nexp+nchip+k] += m[i]->mag * pu[k] * pv[k] * is2;
 	}
-	b_data[nexp+nchip+ncoeff+m[i]->jstar] -= m[i]->mag;
+	b_data[nexp+nchip+ncoeff+m[i]->jstar] -= m[i]->mag * is2;
     }
     for (int i = 0; i < nSobs; i++) {
-	if (s[i]->jstar == -1 || !s[i]->good || s[i]->mag == -9999) continue;
+	if (s[i]->jstar == -1 || !s[i]->good || s[i]->mag == -9999 || s[i]->err == -9999) continue;
 
 	if (p->chebyshev) {
 	   for (int k = 0; k < ncoeff; k++) {
@@ -2017,43 +2106,45 @@ double *fluxFit_rel(std::vector<Obs::Ptr> &m,
 	   }
 	}
 
-	a_data[s[i]->iexp*ndim+s[i]->iexp] -= 1;
-	a_data[s[i]->iexp*ndim+(nexp+s[i]->ichip)] -= 1;
-	for (int k = 0; k < ncoeff; k++) {
-	   a_data[s[i]->iexp*ndim+(nexp+nchip+k)] -= pu[k] * pv[k];
-	}
-	a_data[s[i]->iexp*ndim+(nexp+nchip+ncoeff+s[i]->jstar)] += 1;
+	is2 = 1.0 / pow(s[i]->err, 2);
 
-	a_data[(nexp+s[i]->ichip)*ndim+s[i]->iexp] -= 1;
-	a_data[(nexp+s[i]->ichip)*ndim+(nexp+s[i]->ichip)] -= 1;
+	a_data[s[i]->jexp*ndim+s[i]->jexp] -= is2;
+	a_data[s[i]->jexp*ndim+(nexp+s[i]->jchip)] -= is2;
 	for (int k = 0; k < ncoeff; k++) {
-	   a_data[(nexp+s[i]->ichip)*ndim+(nexp+nchip+k)] -= pu[k] * pv[k];
+	   a_data[s[i]->jexp*ndim+(nexp+nchip+k)] -= pu[k] * pv[k] * is2;
 	}
-	a_data[(nexp+s[i]->ichip)*ndim+(nexp+nchip+ncoeff+s[i]->jstar)] += 1;
+	a_data[s[i]->jexp*ndim+(nexp+nchip+ncoeff+s[i]->jstar)] += is2;
+
+	a_data[(nexp+s[i]->jchip)*ndim+s[i]->jexp] -= is2;
+	a_data[(nexp+s[i]->jchip)*ndim+(nexp+s[i]->jchip)] -= is2;
+	for (int k = 0; k < ncoeff; k++) {
+	   a_data[(nexp+s[i]->jchip)*ndim+(nexp+nchip+k)] -= pu[k] * pv[k] * is2;
+	}
+	a_data[(nexp+s[i]->jchip)*ndim+(nexp+nchip+ncoeff+s[i]->jstar)] += is2;
 
 	for (int j = 0; j < ncoeff; j++) {
-	   a_data[(nexp+nchip+j)*ndim+s[i]->iexp] -= pu[j] * pv[j];
-	   a_data[(nexp+nchip+j)*ndim+(nexp+s[i]->ichip)] -= pu[j] * pv[j];
+	   a_data[(nexp+nchip+j)*ndim+s[i]->jexp] -= pu[j] * pv[j] * is2;
+	   a_data[(nexp+nchip+j)*ndim+(nexp+s[i]->jchip)] -= pu[j] * pv[j] * is2;
 	   for (int k = 0; k < ncoeff; k++) {
 	      a_data[(nexp+nchip+j)*ndim+(nexp+nchip+k)] -= pu[j] * pv[j] * 
-		                                            pu[k] * pv[k];
+		                                            pu[k] * pv[k] * is2;
 	   }
-	   a_data[(nexp+nchip+j)*ndim+(nexp+nchip+ncoeff+s[i]->jstar)] += pu[j] * pv[j];
+	   a_data[(nexp+nchip+j)*ndim+(nexp+nchip+ncoeff+s[i]->jstar)] += pu[j] * pv[j] * is2;
 	}
 
-	a_data[(nexp+nchip+ncoeff+s[i]->jstar)*ndim+s[i]->iexp] += 1;
-	a_data[(nexp+nchip+ncoeff+s[i]->jstar)*ndim+(nexp+s[i]->ichip)] += 1;
+	a_data[(nexp+nchip+ncoeff+s[i]->jstar)*ndim+s[i]->jexp] += is2;
+	a_data[(nexp+nchip+ncoeff+s[i]->jstar)*ndim+(nexp+s[i]->jchip)] += is2;
 	for (int k = 0; k < ncoeff; k++) {
-	   a_data[(nexp+nchip+ncoeff+s[i]->jstar)*ndim+(nexp+nchip+k)] += pu[k] * pv[k];
+	   a_data[(nexp+nchip+ncoeff+s[i]->jstar)*ndim+(nexp+nchip+k)] += pu[k] * pv[k] * is2;
 	}
-	a_data[(nexp+nchip+ncoeff+s[i]->jstar)*ndim+(nexp+nchip+ncoeff+s[i]->jstar)] -= 1;
+	a_data[(nexp+nchip+ncoeff+s[i]->jstar)*ndim+(nexp+nchip+ncoeff+s[i]->jstar)] -= is2;
 
-	b_data[s[i]->iexp] += s[i]->mag;
-	b_data[nexp+s[i]->ichip] += s[i]->mag;
+	b_data[s[i]->jexp] += s[i]->mag * is2;
+	b_data[nexp+s[i]->jchip] += s[i]->mag * is2;
 	for (int k = 0; k < ncoeff; k++) {
-	   b_data[nexp+nchip+k] += s[i]->mag * pu[k] * pv[k];
+	   b_data[nexp+nchip+k] += s[i]->mag * pu[k] * pv[k] * is2;
 	}
-	b_data[nexp+nchip+ncoeff+s[i]->jstar] -= s[i]->mag;
+	b_data[nexp+nchip+ncoeff+s[i]->jstar] -= s[i]->mag * is2;
     }
 
     a_data[nexp+nchip+ncoeff+nstar] = 1;
@@ -2074,16 +2165,42 @@ double *fluxFit_rel(std::vector<Obs::Ptr> &m,
     delete [] a_data;
     delete [] b_data;
 
-    double dmag = 0.0;
-    int n = 0;
+    std::vector<double> v;
+    std::vector<double> e;
     for (int i = 0; i < nMobs; i++) {
-	if (m[i]->jstar == -1 || !m[i]->good || m[i]->mag == -9999 ||
+	if (m[i]->jstar == -1 || !m[i]->good || m[i]->mag == -9999 || m[i]->err == -9999 ||
 	    m[i]->mag_cat == -9999) continue;
-	dmag += (m[i]->mag_cat - solution[nexp+nchip+ncoeff+m[i]->jstar]);
-	n++;
+	v.push_back(m[i]->mag_cat - solution[nexp+nchip+ncoeff+m[i]->jstar]);
+	e.push_back(m[i]->err_cat);
     }
-    dmag /= n;
-    std::cout << dmag << std::endl;
+
+    double S = 0.;
+    double Sx = 0.;
+    double Sxx = 0.;
+    for (int i = 0; i < v.size(); i++) {
+	S += 1./(e[i]*e[i]);
+	Sx += v[i]/(e[i]*e[i]);
+	Sxx += v[i]*v[i]/(e[i]*e[i]);
+    }
+    double avg = Sx / S;
+    double std = sqrt((Sxx-Sx*Sx/S)/S);
+    std::cout << avg << " " << std << std::endl;
+
+    for (int k = 0; k < 2; k++) {
+	S = Sx = Sxx = 0.;
+	for (int i = 0; i < v.size(); i++) {
+	    if (fabs(v[i]-avg)/e[i] < 3.0) {
+		S += 1./(e[i]*e[i]);
+		Sx += v[i]/(e[i]*e[i]);
+		Sxx += v[i]*v[i]/(e[i]*e[i]);
+	    }
+	}
+	avg = Sx / S;
+	std = sqrt((Sxx-Sx*Sx/S)/S);
+	std::cout << avg << " " << std << std::endl;
+    }
+
+    double dmag = avg;
 
     for (int i = 0; i < nexp; i++) {
 	solution[i] += dmag;
@@ -2124,7 +2241,7 @@ double *fluxFit_abs(std::vector<Obs::Ptr> &m,
 	num[i] = 0;
     }
     for (int i = 0; i < nSobs; i++) {
-	if (s[i]->good && s[i]->mag != -9999) {
+	if (s[i]->good && s[i]->mag != -9999 && s[i]->err != -9999) {
 	    num[s[i]->istar] += 1;
 	}
     }
@@ -2169,8 +2286,10 @@ double *fluxFit_abs(std::vector<Obs::Ptr> &m,
 	b_data[i] = 0.0;
     }
 
+    double is2 = 1.0;
     for (int i = 0; i < nMobs; i++) {
-	if (m[i]->jstar == -1 || !m[i]->good || m[i]->mag == -9999 || m[i]->mag0 == -9999) continue;
+	if (m[i]->jstar == -1 || !m[i]->good || m[i]->mag == -9999 ||
+	    m[i]->err == -9999 || m[i]->mag_cat == -9999) continue;
 
 	if (p->chebyshev) {
 	   for (int k = 0; k < ncoeff; k++) {
@@ -2184,35 +2303,37 @@ double *fluxFit_abs(std::vector<Obs::Ptr> &m,
 	   }
 	}
 
-	a_data[m[i]->iexp*ndim+m[i]->iexp] -= 1;
-	a_data[m[i]->iexp*ndim+(nexp+m[i]->ichip)] -= 1;
+	is2 = 1.0 / (pow(m[i]->err, 2) + pow(m[i]->err_cat, 2));
+
+	a_data[m[i]->jexp*ndim+m[i]->jexp] -= is2;
+	a_data[m[i]->jexp*ndim+(nexp+m[i]->jchip)] -= is2;
 	for (int k = 0; k < ncoeff; k++) {
-	   a_data[m[i]->iexp*ndim+(nexp+nchip+k)] -= pu[k] * pv[k];
+	   a_data[m[i]->jexp*ndim+(nexp+nchip+k)] -= pu[k] * pv[k] * is2;
 	}
 
-	a_data[(nexp+m[i]->ichip)*ndim+m[i]->iexp] -= 1;
-	a_data[(nexp+m[i]->ichip)*ndim+(nexp+m[i]->ichip)] -= 1;
+	a_data[(nexp+m[i]->jchip)*ndim+m[i]->jexp] -= is2;
+	a_data[(nexp+m[i]->jchip)*ndim+(nexp+m[i]->jchip)] -= is2;
 	for (int k = 0; k < ncoeff; k++) {
-	   a_data[(nexp+m[i]->ichip)*ndim+(nexp+nchip+k)] -= pu[k] * pv[k];
+	   a_data[(nexp+m[i]->jchip)*ndim+(nexp+nchip+k)] -= pu[k] * pv[k] * is2;
 	}
 
 	for (int j = 0; j < ncoeff; j++) {
-	   a_data[(nexp+nchip+j)*ndim+m[i]->iexp] -= pu[j] * pv[j];
-	   a_data[(nexp+nchip+j)*ndim+(nexp+m[i]->ichip)] -= pu[j] * pv[j];
+	   a_data[(nexp+nchip+j)*ndim+m[i]->jexp] -= pu[j] * pv[j] * is2;
+	   a_data[(nexp+nchip+j)*ndim+(nexp+m[i]->jchip)] -= pu[j] * pv[j] * is2;
 	   for (int k = 0; k < ncoeff; k++) {
 	      a_data[(nexp+nchip+j)*ndim+(nexp+nchip+k)] -= pu[j] * pv[j] * 
-		                                            pu[k] * pv[k];
+		                                            pu[k] * pv[k] * is2;
 	   }
 	}
 
-	b_data[m[i]->iexp] += (m[i]->mag - m[i]->mag_cat);
-	b_data[nexp+m[i]->ichip] += (m[i]->mag - m[i]->mag_cat);
+	b_data[m[i]->jexp] += (m[i]->mag - m[i]->mag_cat) * is2;
+	b_data[nexp+m[i]->jchip] += (m[i]->mag - m[i]->mag_cat) * is2;
 	for (int k = 0; k < ncoeff; k++) {
-	    b_data[nexp+nchip+k] += (m[i]->mag - m[i]->mag_cat) * pu[k] * pv[k];
+	    b_data[nexp+nchip+k] += (m[i]->mag - m[i]->mag_cat) * pu[k] * pv[k] * is2;
 	}
     }
     for (int i = 0; i < nSobs; i++) {
-	if (s[i]->jstar == -1 || !s[i]->good || s[i]->mag == -9999) continue;
+	if (s[i]->jstar == -1 || !s[i]->good || s[i]->mag == -9999 || s[i]->err == -9999) continue;
 
 	if (p->chebyshev) {
 	   for (int k = 0; k < ncoeff; k++) {
@@ -2226,43 +2347,45 @@ double *fluxFit_abs(std::vector<Obs::Ptr> &m,
 	   }
 	}
 
-	a_data[s[i]->iexp*ndim+s[i]->iexp] -= 1;
-	a_data[s[i]->iexp*ndim+(nexp+s[i]->ichip)] -= 1;
-	for (int k = 0; k < ncoeff; k++) {
-	   a_data[s[i]->iexp*ndim+(nexp+nchip+k)] -= pu[k] * pv[k];
-	}
-	a_data[s[i]->iexp*ndim+(nexp+nchip+ncoeff+s[i]->jstar)] += 1;
+	is2 = 1.0 / pow(s[i]->err, 2);
 
-	a_data[(nexp+s[i]->ichip)*ndim+s[i]->iexp] -= 1;
-	a_data[(nexp+s[i]->ichip)*ndim+(nexp+s[i]->ichip)] -= 1;
+	a_data[s[i]->jexp*ndim+s[i]->jexp] -= is2;
+	a_data[s[i]->jexp*ndim+(nexp+s[i]->jchip)] -= is2;
 	for (int k = 0; k < ncoeff; k++) {
-	   a_data[(nexp+s[i]->ichip)*ndim+(nexp+nchip+k)] -= pu[k] * pv[k];
+	   a_data[s[i]->jexp*ndim+(nexp+nchip+k)] -= pu[k] * pv[k] * is2;
 	}
-	a_data[(nexp+s[i]->ichip)*ndim+(nexp+nchip+ncoeff+s[i]->jstar)] += 1;
+	a_data[s[i]->jexp*ndim+(nexp+nchip+ncoeff+s[i]->jstar)] += is2;
+
+	a_data[(nexp+s[i]->jchip)*ndim+s[i]->jexp] -= is2;
+	a_data[(nexp+s[i]->jchip)*ndim+(nexp+s[i]->jchip)] -= is2;
+	for (int k = 0; k < ncoeff; k++) {
+	   a_data[(nexp+s[i]->jchip)*ndim+(nexp+nchip+k)] -= pu[k] * pv[k] * is2;
+	}
+	a_data[(nexp+s[i]->jchip)*ndim+(nexp+nchip+ncoeff+s[i]->jstar)] += is2;
 
 	for (int j = 0; j < ncoeff; j++) {
-	   a_data[(nexp+nchip+j)*ndim+s[i]->iexp] -= pu[j] * pv[j];
-	   a_data[(nexp+nchip+j)*ndim+(nexp+s[i]->ichip)] -= pu[j] * pv[j];
+	   a_data[(nexp+nchip+j)*ndim+s[i]->jexp] -= pu[j] * pv[j] * is2;
+	   a_data[(nexp+nchip+j)*ndim+(nexp+s[i]->jchip)] -= pu[j] * pv[j] * is2;
 	   for (int k = 0; k < ncoeff; k++) {
 	      a_data[(nexp+nchip+j)*ndim+(nexp+nchip+k)] -= pu[j] * pv[j] * 
-		                                            pu[k] * pv[k];
+		                                            pu[k] * pv[k] * is2;
 	   }
-	   a_data[(nexp+nchip+j)*ndim+(nexp+nchip+ncoeff+s[i]->jstar)] += pu[j] * pv[j];
+	   a_data[(nexp+nchip+j)*ndim+(nexp+nchip+ncoeff+s[i]->jstar)] += pu[j] * pv[j] * is2;
 	}
 
-	a_data[(nexp+nchip+ncoeff+s[i]->jstar)*ndim+s[i]->iexp] += 1;
-	a_data[(nexp+nchip+ncoeff+s[i]->jstar)*ndim+(nexp+s[i]->ichip)] += 1;
+	a_data[(nexp+nchip+ncoeff+s[i]->jstar)*ndim+s[i]->jexp] += is2;
+	a_data[(nexp+nchip+ncoeff+s[i]->jstar)*ndim+(nexp+s[i]->jchip)] += is2;
 	for (int k = 0; k < ncoeff; k++) {
-	   a_data[(nexp+nchip+ncoeff+s[i]->jstar)*ndim+(nexp+nchip+k)] += pu[k] * pv[k];
+	   a_data[(nexp+nchip+ncoeff+s[i]->jstar)*ndim+(nexp+nchip+k)] += pu[k] * pv[k] * is2;
 	}
-	a_data[(nexp+nchip+ncoeff+s[i]->jstar)*ndim+(nexp+nchip+ncoeff+s[i]->jstar)] -= 1;
+	a_data[(nexp+nchip+ncoeff+s[i]->jstar)*ndim+(nexp+nchip+ncoeff+s[i]->jstar)] -= is2;
 
-	b_data[s[i]->iexp] += s[i]->mag;
-	b_data[nexp+s[i]->ichip] += s[i]->mag;
+	b_data[s[i]->jexp] += s[i]->mag * is2;
+	b_data[nexp+s[i]->jchip] += s[i]->mag * is2;
 	for (int k = 0; k < ncoeff; k++) {
-	   b_data[nexp+nchip+k] += s[i]->mag * pu[k] * pv[k];
+	   b_data[nexp+nchip+k] += s[i]->mag * pu[k] * pv[k] * is2;
 	}
-	b_data[nexp+nchip+ncoeff+s[i]->jstar] -= s[i]->mag;
+	b_data[nexp+nchip+ncoeff+s[i]->jstar] -= s[i]->mag * is2;
     }
 
     for (int i = 0; i < nchip; i++) {
@@ -2298,7 +2421,7 @@ double calcChi2_rel(std::vector<Obs::Ptr> &m,
 		    int nchip,
 		    double *fsol,
 		    FluxFitParams::Ptr p,
-		    bool norm=false)
+		    bool mag=false)
 {
     int nMobs = m.size();
     int nSobs = s.size();
@@ -2306,26 +2429,29 @@ double calcChi2_rel(std::vector<Obs::Ptr> &m,
     int ncoeff = p->ncoeff - 3;
 
     double chi2 = 0.0;
+    double mag2 = 0.0;
     int num = 0;
     for (int i = 0; i < nMobs; i++) {
-	if (m[i]->jstar == -1 || !m[i]->good || m[i]->mag == -9999) continue;
-	double val = m[i]->mag + fsol[m[i]->iexp] + fsol[nexp+m[i]->ichip];
+	if (m[i]->jstar == -1 || !m[i]->good || m[i]->mag == -9999 || m[i]->err == -9999) continue;
+	double val = m[i]->mag + fsol[m[i]->jexp] + fsol[nexp+m[i]->jchip];
 	val += p->eval(m[i]->u, m[i]->v);
-	chi2 += pow(val - fsol[nexp+nchip+ncoeff+m[i]->jstar], 2.0);
+	chi2 += pow((val - fsol[nexp+nchip+ncoeff+m[i]->jstar])/m[i]->err, 2.0);
+	mag2 += pow((val - fsol[nexp+nchip+ncoeff+m[i]->jstar]), 2.0);
 	num++;
     }
     for (int i = 0; i < nSobs; i++) {
-	if (s[i]->jstar == -1 || !s[i]->good || s[i]->mag == -9999) continue;
-	double val = s[i]->mag + fsol[s[i]->iexp] + fsol[nexp+s[i]->ichip];
+	if (s[i]->jstar == -1 || !s[i]->good || s[i]->mag == -9999 || s[i]->err == -9999) continue;
+	double val = s[i]->mag + fsol[s[i]->jexp] + fsol[nexp+s[i]->jchip];
 	val += p->eval(s[i]->u, s[i]->v);
-	chi2 += pow(val - fsol[nexp+nchip+ncoeff+s[i]->jstar], 2.0);
+	chi2 += pow((val - fsol[nexp+nchip+ncoeff+s[i]->jstar])/s[i]->err, 2.0);
+	mag2 += pow((val - fsol[nexp+nchip+ncoeff+s[i]->jstar]), 2.0);
 	num++;
     }
 
-    if (norm)
-	return chi2 / num;
+    if (mag)
+	return mag2 / num;
     else
-	return chi2;
+	return chi2 / num;
 }
 
 double calcChi2_abs(std::vector<Obs::Ptr> &m, 
@@ -2334,7 +2460,7 @@ double calcChi2_abs(std::vector<Obs::Ptr> &m,
 		    int nchip,
 		    double *fsol,
 		    FluxFitParams::Ptr p,
-		    bool norm=false)
+		    bool mag=false)
 {
     int nMobs = m.size();
     int nSobs = s.size();
@@ -2342,26 +2468,30 @@ double calcChi2_abs(std::vector<Obs::Ptr> &m,
     int ncoeff = p->ncoeff - 3;
 
     double chi2 = 0.0;
-    int num;
+    double mag2 = 0.0;
+    int num = 0;
     for (int i = 0; i < nMobs; i++) {
-	if (m[i]->jstar == -1 || !m[i]->good || m[i]->mag == -9999 || m[i]->mag0 == -9999) continue;
-	double val = m[i]->mag + fsol[m[i]->iexp] + fsol[nexp+m[i]->ichip];
+	if (m[i]->jstar == -1 || !m[i]->good || m[i]->mag == -9999 ||
+	    m[i]->err == -9999 || m[i]->mag_cat == -9999) continue;
+	double val = m[i]->mag + fsol[m[i]->jexp] + fsol[nexp+m[i]->jchip];
 	val += p->eval(m[i]->u, m[i]->v);
-	chi2 += pow(val - m[i]->mag0, 2.0);
+	chi2 += pow(val - m[i]->mag_cat, 2.0) / (pow(m[i]->err, 2.0) + pow(m[i]->err_cat, 2.0));
+	mag2 += pow(val - m[i]->mag_cat, 2.0);
 	num++;
     }
     for (int i = 0; i < nSobs; i++) {
-	if (s[i]->jstar == -1 || !s[i]->good || s[i]->mag == -9999) continue;
-	double val = s[i]->mag + fsol[s[i]->iexp] + fsol[nexp+s[i]->ichip];
+	if (s[i]->jstar == -1 || !s[i]->good || s[i]->mag == -9999 || s[i]->err == -9999) continue;
+	double val = s[i]->mag + fsol[s[i]->jexp] + fsol[nexp+s[i]->jchip];
 	val += p->eval(s[i]->u, s[i]->v);
-	chi2 += pow(val - fsol[nexp+nchip+ncoeff+s[i]->jstar], 2.0);
+	chi2 += pow((val - fsol[nexp+nchip+ncoeff+s[i]->jstar])/s[i]->err, 2.0);
+	mag2 += pow((val - fsol[nexp+nchip+ncoeff+s[i]->jstar]), 2.0);
 	num++;
     }
 
-    if (norm)
-	return chi2 / num;
+    if (mag)
+	return mag2 / num;
     else
-	return chi2;
+	return chi2 / num;
 }
 
 void flagObj_rel(std::vector<Obs::Ptr> &m,
@@ -2379,20 +2509,20 @@ void flagObj_rel(std::vector<Obs::Ptr> &m,
 
     int nreject = 0;
     for (int i = 0; i < nMobs; i++) {
-	if (m[i]->jstar == -1 || !m[i]->good || m[i]->mag == -9999) continue;
-	double val = m[i]->mag + fsol[m[i]->iexp] + fsol[nexp+m[i]->ichip];
+	if (m[i]->jstar == -1 || !m[i]->good || m[i]->mag == -9999 || m[i]->err == -9999) continue;
+	double val = m[i]->mag + fsol[m[i]->jexp] + fsol[nexp+m[i]->jchip];
 	val += p->eval(m[i]->u, m[i]->v);
-	double r2 = pow(val - fsol[nexp+nchip+ncoeff+m[i]->jstar], 2.0);
+	double r2 = pow((val - fsol[nexp+nchip+ncoeff+m[i]->jstar])/m[i]->err, 2.0);
 	if (r2 > e2) {
 	    m[i]->good = false;
 	    nreject++;
 	}
     }
     for (int i = 0; i < nSobs; i++) {
-	if (s[i]->jstar == -1 || !s[i]->good || s[i]->mag == -9999) continue;
-	double val = s[i]->mag + fsol[s[i]->iexp] + fsol[nexp+s[i]->ichip];
+	if (s[i]->jstar == -1 || !s[i]->good || s[i]->mag == -9999 || s[i]->err == -9999) continue;
+	double val = s[i]->mag + fsol[s[i]->jexp] + fsol[nexp+s[i]->jchip];
 	val += p->eval(s[i]->u, s[i]->v);
-	double r2 = pow(val - fsol[nexp+nchip+ncoeff+s[i]->jstar], 2.0);
+	double r2 = pow((val - fsol[nexp+nchip+ncoeff+s[i]->jstar])/s[i]->err, 2.0);
 	if (r2 > e2) {
 	    s[i]->good = false;
 	    nreject++;
@@ -2417,20 +2547,21 @@ void flagObj_abs(std::vector<Obs::Ptr> &m,
 
     int nreject = 0;
     for (int i = 0; i < nMobs; i++) {
-	if (m[i]->jstar == -1 || !m[i]->good || m[i]->mag == -9999 || m[i]->mag0 == -9999) continue;
-	double val = m[i]->mag + fsol[m[i]->iexp] + fsol[nexp+m[i]->ichip];
+	if (m[i]->jstar == -1 || !m[i]->good || m[i]->mag == -9999 ||
+	    m[i]->err == -9999 || m[i]->mag_cat == -9999) continue;
+	double val = m[i]->mag + fsol[m[i]->jexp] + fsol[nexp+m[i]->jchip];
 	val += p->eval(m[i]->u, m[i]->v);
-	double r2 = pow(val - m[i]->mag0, 2.0);
+	double r2 = pow(val - m[i]->mag_cat, 2.0) / (pow(m[i]->err, 2.0) + pow(m[i]->err_cat, 2.0));
 	if (r2 > e2) {
 	    m[i]->good = false;
 	    nreject++;
 	}
     }
     for (int i = 0; i < nSobs; i++) {
-	if (s[i]->jstar == -1 || !s[i]->good || s[i]->mag == -9999) continue;
-	double val = s[i]->mag + fsol[s[i]->iexp] + fsol[nexp+s[i]->ichip];
+	if (s[i]->jstar == -1 || !s[i]->good || s[i]->mag == -9999 || s[i]->err == -9999) continue;
+	double val = s[i]->mag + fsol[s[i]->jexp] + fsol[nexp+s[i]->jchip];
 	val += p->eval(s[i]->u, s[i]->v);
-	double r2 = pow(val - fsol[nexp+nchip+ncoeff+s[i]->jstar], 2.0);
+	double r2 = pow((val - fsol[nexp+nchip+ncoeff+s[i]->jstar])/s[i]->err, 2.0);
 	if (r2 > e2) {
 	    s[i]->good = false;
 	    nreject++;
@@ -2474,11 +2605,17 @@ double calcChi2(std::vector<Obs::Ptr>& o, CoeffSet& coeffVec, Poly::Ptr p, bool 
     int *xorder = p->xorder;
     int *yorder = p->yorder;
 
-    double **a = new double*[coeffVec.size()];
-    double **b = new double*[coeffVec.size()];
-    for (size_t i = 0; i < coeffVec.size(); i++) {
-	a[i] = coeffVec[i]->a;
-	b[i] = coeffVec[i]->b;
+//    double **a = new double*[coeffVec.size()];
+//    double **b = new double*[coeffVec.size()];
+//    for (size_t i = 0; i < coeffVec.size(); i++) {
+//	a[i] = coeffVec[i]->a;
+//	b[i] = coeffVec[i]->b;
+//    }
+    std::map<ExpType, double*> a;
+    std::map<ExpType, double*> b;
+    for (CoeffSet::iterator it = coeffVec.begin(); it != coeffVec.end(); it++) {
+	a.insert(std::map<ExpType, double*>::value_type(it->first, it->second->a));
+	b.insert(std::map<ExpType, double*>::value_type(it->first, it->second->b));
     }
 
     double chi2 = 0.0;
@@ -2495,8 +2632,8 @@ double calcChi2(std::vector<Obs::Ptr>& o, CoeffSet& coeffVec, Poly::Ptr p, bool 
 	num++;
     }
 
-    delete [] a;
-    delete [] b;
+//    delete [] a;
+//    delete [] b;
 
     if (norm)
 	return chi2/num;
@@ -2504,7 +2641,7 @@ double calcChi2(std::vector<Obs::Ptr>& o, CoeffSet& coeffVec, Poly::Ptr p, bool 
 	return chi2;
 }
 
-void flagObj2(std::vector<Obs::Ptr>& o, CoeffSet& coeffVec, Poly::Ptr p, double e2)
+void flagObj2(std::vector<Obs::Ptr>& o, CoeffSet& coeffVec, Poly::Ptr p, double e2, double catRMS=0.0)
 {
     int nobs  = o.size();
 
@@ -2512,34 +2649,50 @@ void flagObj2(std::vector<Obs::Ptr>& o, CoeffSet& coeffVec, Poly::Ptr p, double 
     int *xorder = p->xorder;
     int *yorder = p->yorder;
 
-    double **a = new double*[coeffVec.size()];
-    double **b = new double*[coeffVec.size()];
-    for (size_t i = 0; i < coeffVec.size(); i++) {
-	a[i] = coeffVec[i]->a;
-	b[i] = coeffVec[i]->b;
+//    double **a = new double*[coeffVec.size()];
+//    double **b = new double*[coeffVec.size()];
+//    for (size_t i = 0; i < coeffVec.size(); i++) {
+//	a[i] = coeffVec[i]->a;
+//	b[i] = coeffVec[i]->b;
+//    }
+    std::map<ExpType, double*> a;
+    std::map<ExpType, double*> b;
+    for (CoeffSet::iterator it = coeffVec.begin(); it != coeffVec.end(); it++) {
+	a.insert(std::map<ExpType, double*>::value_type(it->first, it->second->a));
+	b.insert(std::map<ExpType, double*>::value_type(it->first, it->second->b));
     }
 
     int nreject = 0;
     for (int i = 0; i < nobs; i++) {
-	//if (!o[i]->good) continue;
+	if (!o[i]->good) continue;
 	double Ax = o[i]->xi;
 	double Ay = o[i]->eta;
+	double Bx = 0.0;
+	double By = 0.0;
+	double Cx = 0.0;
+	double Cy = 0.0;
 	for (int k = 0; k < ncoeff; k++) {
 	    Ax -= a[o[i]->iexp][k] * pow(o[i]->u, xorder[k])   * pow(o[i]->v, yorder[k]);
 	    Ay -= b[o[i]->iexp][k] * pow(o[i]->u, xorder[k])   * pow(o[i]->v, yorder[k]);
+	    Bx += a[o[i]->iexp][k] * pow(o[i]->u, xorder[k]-1) * pow(o[i]->v, yorder[k]) * xorder[k];
+	    By += b[o[i]->iexp][k] * pow(o[i]->u, xorder[k]-1) * pow(o[i]->v, yorder[k]) * xorder[k];
+	    Cx += a[o[i]->iexp][k] * pow(o[i]->u, xorder[k]) * pow(o[i]->v, yorder[k]-1) * yorder[k];
+	    Cy += b[o[i]->iexp][k] * pow(o[i]->u, xorder[k]) * pow(o[i]->v, yorder[k]-1) * yorder[k];
 	}
-	double chi2 = Ax * Ax + Ay * Ay;
+	double dxi  = Bx * o[i]->xerr + Cx * o[i]->yerr;
+	double deta = By * o[i]->xerr + Cy * o[i]->yerr;
+	double chi2 = Ax * Ax / (dxi * dxi + catRMS * catRMS) + Ay * Ay / (deta * deta + catRMS * catRMS);
 	if (chi2 > e2) {
 	    o[i]->good = false;
 	    nreject++;
 	} else {
-	    o[i]->good = true;
+	    //o[i]->good = true;
 	}
     }
     printf("nreject = %d\n", nreject);
 
-    delete [] a;
-    delete [] b;
+//    delete [] a;
+//    delete [] b;
 }
 
 double calcChi2_Star(std::vector<Obs::Ptr>& o, std::vector<Obs::Ptr>& s, CoeffSet& coeffVec, Poly::Ptr p)
@@ -2562,34 +2715,60 @@ lsst::meas::mosaic::obsVecFromSourceGroup(SourceGroup const &all,
 	double ra  = ss[0]->getRa().asRadians();
 	double dec = ss[0]->getDec().asRadians();
 	double mag_cat;
-	if (ss[0]->getFlux() > 0.0) {
+	double err_cat;
+	if (ss[0]->getFlux() > 0.0 && ss[0]->getFluxErr() > 0.0) {
 	    mag_cat = -2.5*log10(ss[0]->getFlux());
+	    err_cat = 2.5/M_LN10*ss[0]->getFluxErr()/ss[0]->getFlux();
 	} else {
 	    mag_cat = -9999;
+	    err_cat = -9999;
 	}
 	//std::cout << ra << " " << dec << std::endl;
 	//std::cout << mag0 << std::endl;
 	for (size_t j = 1; j < ss.size(); j++) {
-	    int id    = ss[j]->getId();
-	    int iexp  = ss[j]->getExp();
-	    int ichip = ss[j]->getChip();
+	    IdType id    = ss[j]->getId();
+	    ExpType iexp  = ss[j]->getExp();
+	    ChipType  ichip = ss[j]->getChip();
 	    double x = ss[j]->getX();
 	    double y = ss[j]->getY();
 	    Obs::Ptr o = Obs::Ptr(new Obs(id, ra, dec, x, y, ichip, iexp));
+
+	    int jexp = 0;
+	    for (WcsDic::iterator it = wcsDic.begin(); it != wcsDic.end(); it++) {
+		if (it->first == iexp) break;
+		jexp++;
+	    }
+	    o->jexp = jexp;
+
+	    int jchip = 0;
+	    for (CcdSet::iterator it = ccdSet.begin(); it != ccdSet.end(); it++) {
+		if (it->first == ichip) break;
+		jchip++;
+	    }
+	    o->jchip = jchip;
+
 	    o->mag_cat = mag_cat;
+	    o->err_cat = err_cat;
 	    o->mag0 = mag_cat;
 	    lsst::afw::geom::PointD crval
 		= wcsDic[iexp]->getSkyOrigin()->getPosition(lsst::afw::geom::radians);
 	    o->setXiEta(crval[0], crval[1]);
 	    o->setUV(ccdSet[ichip]);
+	    o->xerr = ss[j]->getXErr();
+	    o->yerr = ss[j]->getYErr();
+	    if (lsst::utils::isnan(o->xerr) || lsst::utils::isnan(o->yerr))
+		o->good = false;
+	    //printf("%d %e %e\n", o->good, o->xerr, o->yerr);
 	    o->istar = i;
 	    if (ss[0]->getAstromBad() || ss[j]->getAstromBad()) {
 		o->good = false;
 	    }
-	    if (ss[j]->getFlux() > 0.0) {
+	    if (ss[j]->getFlux() > 0.0 && ss[j]->getFluxErr() > 0.0) {
 		o->mag = -2.5*log10(ss[j]->getFlux());
+		o->err = 2.5/M_LN10*ss[j]->getFluxErr()/ss[j]->getFlux();
 	    } else {
 		o->mag = -9999;
+		o->err = -9999;
 	    }
 	    obsVec.push_back(o);
 	}
@@ -2602,35 +2781,45 @@ void fluxFitRelative(ObsVec& matchVec,
 		     int nmatch,
 		     ObsVec& sourceVec,
 		     int nsource,
-		     CoeffSet& coeffVec, 
-		     int nchip,
-		     std::vector<double>& fscale,
+		     WcsDic& wcsDic,
+		     CcdSet& ccdSet,
+		     std::map<ExpType, float>& fexp,
+		     std::map<ChipType, float>& fchip,
 		     FluxFitParams::Ptr& ffp) {
-    int nexp = coeffVec.size();
+
+    int nexp = wcsDic.size();
+    int nchip = ccdSet.size();
 
     double *fsol = fluxFit_rel(matchVec, nmatch, sourceVec, nsource, nexp, nchip, ffp);
     double chi2f = calcChi2_rel(matchVec, sourceVec, nexp, nchip, fsol, ffp);
     printf("chi2f: %e\n", chi2f);
     double e2f = calcChi2_rel(matchVec, sourceVec, nexp, nchip, fsol, ffp, true);
-    printf("e2f: %f (mag)\n", sqrt(e2f));
-    flagObj_rel(matchVec, sourceVec, nexp, nchip, fsol, 9.0*e2f, ffp);
+    printf("err: %f (mag)\n", sqrt(e2f));
+    flagObj_rel(matchVec, sourceVec, nexp, nchip, fsol, 9.0, ffp);
     delete [] fsol;
 
     fsol = fluxFit_rel(matchVec, nmatch, sourceVec, nsource, nexp, nchip, ffp);
     chi2f = calcChi2_rel(matchVec, sourceVec, nexp, nchip, fsol, ffp);
     printf("chi2f: %e\n", chi2f);
     e2f = calcChi2_rel(matchVec, sourceVec, nexp, nchip, fsol, ffp, true);
-    printf("e2f: %f (mag)\n", sqrt(e2f));
-    flagObj_rel(matchVec, sourceVec, nexp, nchip, fsol, 9.0*e2f, ffp);
+    printf("err: %f (mag)\n", sqrt(e2f));
+    flagObj_rel(matchVec, sourceVec, nexp, nchip, fsol, 9.0, ffp);
     delete [] fsol;
 
     fsol = fluxFit_rel(matchVec, nmatch, sourceVec, nsource, nexp, nchip, ffp);
     chi2f = calcChi2_rel(matchVec, sourceVec, nexp, nchip, fsol, ffp);
     printf("chi2f: %e\n", chi2f);
     e2f = calcChi2_rel(matchVec, sourceVec, nexp, nchip, fsol, ffp, true);
-    printf("e2f: %f (mag)\n", sqrt(e2f));
-    for (int i = 0; i < nexp + nchip; i++) {
-	fscale.push_back(pow(10., -0.4*fsol[i]));
+    printf("err: %f (mag)\n", sqrt(e2f));
+
+    int i = 0;
+    for (WcsDic::iterator it = wcsDic.begin();
+	 it != wcsDic.end(); it++, i++) {
+	fexp.insert(std::map<ExpType, float>::value_type(it->first, pow(10., -0.4*fsol[i])));
+    }
+    for (CcdSet::iterator it = ccdSet.begin();
+	 it != ccdSet.end(); it++, i++) {
+	fchip.insert(std::map<ExpType, float>::value_type(it->first, pow(10., -0.4*fsol[i])));
     }
     for (int i = 0; i < ffp->ncoeff; i++) {
        printf("%2d %8.5f\n", i, ffp->coeff[i]);
@@ -2642,35 +2831,45 @@ void fluxFitAbsolute(ObsVec& matchVec,
 		     int nmatch,
 		     ObsVec& sourceVec,
 		     int nsource,
-		     CoeffSet& coeffVec, 
-		     int nchip,
-		     std::vector<double>& fscale,
+		     WcsDic& wcsDic,
+		     CcdSet& ccdSet,
+		     std::map<ExpType, float>& fexp,
+		     std::map<ChipType, float>& fchip,
 		     FluxFitParams::Ptr& ffp) {
-    int nexp = coeffVec.size();
+
+    int nexp = wcsDic.size();
+    int nchip = ccdSet.size();
 
     double *fsol = fluxFit_abs(matchVec, nmatch, sourceVec, nsource, nexp, nchip, ffp);
     double chi2f = calcChi2_abs(matchVec, sourceVec, nexp, nchip, fsol, ffp);
     printf("chi2f: %e\n", chi2f);
     double e2f = calcChi2_abs(matchVec, sourceVec, nexp, nchip, fsol, ffp, true);
-    printf("e2f: %f (mag)\n", sqrt(e2f));
-    flagObj_abs(matchVec, sourceVec, nexp, nchip, fsol, 9.0*e2f, ffp);
+    printf("err: %f (mag)\n", sqrt(e2f));
+    flagObj_abs(matchVec, sourceVec, nexp, nchip, fsol, 9.0, ffp);
     delete [] fsol;
 
     fsol = fluxFit_abs(matchVec, nmatch, sourceVec, nsource, nexp, nchip, ffp);
     chi2f = calcChi2_abs(matchVec, sourceVec, nexp, nchip, fsol, ffp);
     printf("chi2f: %e\n", chi2f);
     e2f = calcChi2_abs(matchVec, sourceVec, nexp, nchip, fsol, ffp, true);
-    printf("e2f: %f (mag)\n", sqrt(e2f));
-    flagObj_abs(matchVec, sourceVec, nexp, nchip, fsol, 9.0*e2f, ffp);
+    printf("err: %f (mag)\n", sqrt(e2f));
+    flagObj_abs(matchVec, sourceVec, nexp, nchip, fsol, 9.0, ffp);
     delete [] fsol;
 
     fsol = fluxFit_abs(matchVec, nmatch, sourceVec, nsource, nexp, nchip, ffp);
     chi2f = calcChi2_abs(matchVec, sourceVec, nexp, nchip, fsol, ffp);
     printf("chi2f: %e\n", chi2f);
     e2f = calcChi2_abs(matchVec, sourceVec, nexp, nchip, fsol, ffp, true);
-    printf("e2f: %f (mag)\n", sqrt(e2f));
-    for (int i = 0; i < nexp + nchip; i++) {
-	fscale.push_back(pow(10., -0.4*fsol[i]));
+    printf("err: %f (mag)\n", sqrt(e2f));
+
+    int i = 0;
+    for (WcsDic::iterator it = wcsDic.begin();
+	 it != wcsDic.end(); it++, i++) {
+	fexp.insert(std::map<ExpType, float>::value_type(it->first, pow(10., -0.4*fsol[i])));
+    }
+    for (CcdSet::iterator it = ccdSet.begin();
+	 it != ccdSet.end(); it++, i++) {
+	fchip.insert(std::map<ExpType, float>::value_type(it->first, pow(10., -0.4*fsol[i])));
     }
     for (int i = 0; i < ffp->ncoeff; i++) {
        printf("%2d %8.5f\n", i, ffp->coeff[i]);
@@ -2744,7 +2943,7 @@ void setCRVALtoDetJPeak(Coeff::Ptr c) {
     double w = (3.-sqrt(5.))/2.;
     double ua, ub, uc, ux;
     double va, vb, vc, vx;
-    double fa, fb, fc, fx;
+    double fb, fx;
     double u, v, upre, vpre;
 
     u = upre = 0.0;
@@ -2755,9 +2954,9 @@ void setCRVALtoDetJPeak(Coeff::Ptr c) {
 	uc = u + 3000 / pow(2, i);
 	ub = ua * (1-w) + uc * w;
 
-	fa = c->detJ(ua, v);
+	//fa = c->detJ(ua, v);
 	fb = c->detJ(ub, v);
-	fc = c->detJ(uc, v);
+	//fc = c->detJ(uc, v);
 
 	while (1) {
 	    if (uc - ub > ub - ua) {
@@ -2770,21 +2969,21 @@ void setCRVALtoDetJPeak(Coeff::Ptr c) {
 		if (fx > fb) {
 		    ua = ub;
 		    ub = ux;
-		    fa = c->detJ(ua, v);
+		    //fa = c->detJ(ua, v);
 		    fb = c->detJ(ub, v);
 		} else {
 		    uc = ux;
-		    fc = c->detJ(uc, v);
+		    //fc = c->detJ(uc, v);
 		}
 	    } else {
 		if (fx > fb) {
 		    uc = ub;
 		    ub = ux;
-		    fc = c->detJ(uc, v);
+		    //fc = c->detJ(uc, v);
 		    fb = c->detJ(ub, v);
 		} else {
 		    ua = ux;
-		    fa = c->detJ(ua, v);
+		    //fa = c->detJ(ua, v);
 		}
 	    }
 	    if (uc - ua < 0.01) break;
@@ -2796,9 +2995,9 @@ void setCRVALtoDetJPeak(Coeff::Ptr c) {
 	vc = v + 3000 / pow(2, i);
 	vb = va * (1-w) + vc * w;
 
-	fa = c->detJ(u, va);
+	//fa = c->detJ(u, va);
 	fb = c->detJ(u, vb);
-	fc = c->detJ(u, vc);
+	//fc = c->detJ(u, vc);
 
 	while (1) {
 	    if (vc - vb > vb - va) {
@@ -2811,21 +3010,21 @@ void setCRVALtoDetJPeak(Coeff::Ptr c) {
 		if (fx > fb) {
 		    va = vb;
 		    vb = vx;
-		    fa = c->detJ(u, va);
+		    //fa = c->detJ(u, va);
 		    fb = c->detJ(u, vb);
 		} else {
 		    vc = vx;
-		    fc = c->detJ(u, vc);
+		    //fc = c->detJ(u, vc);
 		}
 	    } else {
 		if (fx > fb) {
 		    vc = vb;
 		    vb = vx;
-		    fc = c->detJ(u, vc);
+		    //fc = c->detJ(u, vc);
 		    fb = c->detJ(u, vb);
 		} else {
 		    va = vx;
-		    fa = c->detJ(u, va);
+		    //fa = c->detJ(u, va);
 		}
 	    }
 	    if (vc - va < 0.01) break;
@@ -2851,20 +3050,20 @@ void setCRVALtoDetJPeak(Coeff::Ptr c) {
 
     double alpha = atan2(y, z*sin(c->D)-x*cos(c->D));
     if (z*sin(c->D)-x*cos(c->D) < 0.0) alpha += M_PI;
-    if (alpha > 2*M_PI) alpha -= 2*M_PI;
+    if (alpha > M_PI) alpha -= 2*M_PI;
     double sinalpha = sin(alpha);
     double delta = atan2(x*sin(c->D)+z*cos(c->D), -y/sinalpha);
-    alpha = alpha + c->A;
+    alpha = -alpha + c->A;
     if (alpha > 2*M_PI) alpha -= 2*M_PI;
 
-    printf("%f %f\n", c->A*R2D, c->D*R2D);
-    printf("%f %f\n", alpha*R2D, delta*R2D);
+    //printf("%f %f\n", c->A*R2D, c->D*R2D);
+    //printf("%f %f\n", alpha*R2D, delta*R2D);
 
     c->A = alpha;
     c->D = delta;
 }
 
-std::vector<Coeff::Ptr>
+CoeffSet
 initialFit(int nexp,
 	   ObsVec &matchVec,
 	   WcsDic &wcsDic,
@@ -2877,13 +3076,15 @@ initialFit(int nexp,
     // These values will be used as initial guess for
     // the subsequent fitting
 
-    std::vector<Coeff::Ptr> coeffVec;
+    CoeffSet coeffVec;
 
-    for (int i = 0; i < nexp; i++) {
+    for (WcsDic::iterator it =  wcsDic.begin(); it != wcsDic.end(); it++) {
+	ExpType iexp = it->first;
+
 	// Select objects for a specific exposure id
 	std::vector<Obs::Ptr> obsVec_sub;
 	for (int j = 0; j < nMobs; j++) {
-	    if (matchVec[j]->iexp == i) {
+	    if (matchVec[j]->iexp == iexp) {
 		obsVec_sub.push_back(matchVec[j]);
 	    }
 	}
@@ -2903,13 +3104,13 @@ initialFit(int nexp,
 
 	// Store solution into Coeff class
 	Coeff::Ptr c = Coeff::Ptr(new Coeff(p));
-	c->iexp = i;
+	c->iexp = iexp;
 	for (int k = 0; k < p->ncoeff; k++) {
 	    c->a[k] = a[k];
 	    c->b[k] = a[k+p->ncoeff];
 	}
 	lsst::afw::geom::PointD crval
-	    = wcsDic[i]->getSkyOrigin()->getPosition(lsst::afw::geom::radians);
+	    = wcsDic[iexp]->getSkyOrigin()->getPosition(lsst::afw::geom::radians);
 	c->A = crval[0] + a[p->ncoeff*2];
 	c->D = crval[1] + a[p->ncoeff*2+1];
 	c->x0 = c->y0 = 0.0;
@@ -2977,7 +3178,7 @@ initialFit(int nexp,
 	printf("calcChi2: %e\n", chi2);
 	/////////////////////////////////////////////////////////////////////////////////
 
-	coeffVec.push_back(c);
+	coeffVec.insert(std::map<ExpType, Coeff::Ptr>::value_type(iexp, c));
 
 	delete [] a;
     }
@@ -2987,16 +3188,23 @@ initialFit(int nexp,
 
 CoeffSet
 lsst::meas::mosaic::solveMosaic_CCD_shot(int order,
-					int nmatch,
-					ObsVec &matchVec,
-					WcsDic &wcsDic,
-					CcdSet &ccdSet,
-					FluxFitParams::Ptr &ffp,
-					std::vector<double> &fscale,
-					bool solveCcd,
-					bool allowRotation,
-					bool verbose)
+					 int nmatch,
+					 ObsVec &matchVec,
+					 WcsDic &wcsDic,
+					 CcdSet &ccdSet,
+					 FluxFitParams::Ptr &ffp,
+					 std::map<ExpType, float> &fexp,
+					 std::map<ChipType, float> &fchip,
+					 bool solveCcd,
+					 bool allowRotation,
+					 bool verbose,
+                     double catRMS,
+                     bool writeSnapshots,
+                     std::string const & snapshotDir
+)
 {
+    boost::filesystem::path snapshotPath(snapshotDir);
+
     Poly::Ptr p = Poly::Ptr(new Poly(order));
 
     int nMobs = matchVec.size();
@@ -3005,12 +3213,16 @@ lsst::meas::mosaic::solveMosaic_CCD_shot(int order,
     int nchip = ccdSet.size();
     int ncoeff = p->ncoeff;
 
+    if (writeSnapshots) {
+        writeObsVec((snapshotPath / "match-initial-0.fits").native(), matchVec);
+    }
+
     // Solve for polynomial coefficients and crvals
     // for each exposure separately
     // These values will be used as initial guess for
     // the subsequent fitting
 
-    std::vector<Coeff::Ptr> coeffVec = initialFit(nexp, matchVec, wcsDic, ccdSet, p);
+    CoeffSet coeffVec = initialFit(nexp, matchVec, wcsDic, ccdSet, p);
 
     // Update Xi and Eta using new crval (rac and decc)
     for (int i = 0; i < nMobs; i++) {
@@ -3020,38 +3232,43 @@ lsst::meas::mosaic::solveMosaic_CCD_shot(int order,
 	matchVec[i]->setFitVal(coeffVec[matchVec[i]->iexp], p);
     }
 
+    if (writeSnapshots) {
+        writeObsVec((snapshotPath / "match-initial-1.fits").native(), matchVec);
+    }
+
     double *coeff;
     for (int k = 0; k < 3; k++) {
-	coeff = solveLinApprox(matchVec, coeffVec, nchip, p, solveCcd, allowRotation);
+	coeff = solveLinApprox(matchVec, coeffVec, nchip, p, solveCcd, allowRotation, catRMS);
 
-	for (int j = 0; j < nexp; j++) {
+	int j = 0;
+	for (CoeffSet::iterator it = coeffVec.begin(); it != coeffVec.end(); it++, j++) {
 	    for (int i = 0; i < ncoeff; i++) {
-		coeffVec[j]->a[i] += coeff[2*ncoeff*j+i];
-		coeffVec[j]->b[i] += coeff[2*ncoeff*j+i+ncoeff];
+		it->second->a[i] += coeff[2*ncoeff*j+i];
+		it->second->b[i] += coeff[2*ncoeff*j+i+ncoeff];
 	    }
 	}
 
 	if (allowRotation) {
-	    for (int i = 0; i < nchip; i++) {
-		lsst::afw::geom::PointD center = ccdSet[i]->getCenter().getPixels(1.0);
-		lsst::afw::geom::PointD offset =
-		    lsst::afw::geom::Point2D(center[0]+coeff[2*ncoeff*nexp+3*i],
-					     center[1]+coeff[2*ncoeff*nexp+3*i+1]);
-		ccdSet[i]->setCenter(lsst::afw::cameraGeom::FpPoint(offset));
-		lsst::afw::cameraGeom::Orientation o = ccdSet[i]->getOrientation();
-		lsst::afw::cameraGeom::Orientation o2(o.getNQuarter(),
-						      o.getPitch(),
-						      o.getRoll(),
-                              o.getYaw() + coeff[2*ncoeff*nexp+3*i+2] * lsst::afw::geom::radians);
-		ccdSet[i]->setOrientation(o2);
+	    int i = 0;
+	    for (CcdSet::iterator it = ccdSet.begin(); it != ccdSet.end(); it++, i++) {
+            afw::geom::Extent2D offset(coeff[2*ncoeff*nexp+3*i],
+                                      coeff[2*ncoeff*nexp+3*i+1]);
+            offset *= it->second->getPixelSize();
+            it->second->shiftCenter(afw::cameraGeom::FpExtent(offset));
+            afw::cameraGeom::Orientation o = it->second->getOrientation();
+            afw::cameraGeom::Orientation o2(o.getNQuarter(),
+                                            o.getPitch(),
+                                            o.getRoll(),
+                                            o.getYaw() + coeff[2*ncoeff*nexp+3*i+2] * afw::geom::radians);
+            it->second->setOrientation(o2);
 	    }
 	} else {
-	    for (int i = 0; i < nchip; i++) {
-		lsst::afw::geom::PointD center = ccdSet[i]->getCenter().getPixels(1.0);
-		lsst::afw::geom::PointD offset =
-		    lsst::afw::geom::Point2D(center[0]+coeff[2*ncoeff*nexp+2*i],
-					     center[1]+coeff[2*ncoeff*nexp+2*i+1]);
-		ccdSet[i]->setCenter(lsst::afw::cameraGeom::FpPoint(offset));
+	    int i = 0;
+	    for (CcdSet::iterator it = ccdSet.begin(); it != ccdSet.end(); it++, i++) {
+            afw::geom::Extent2D offset(coeff[2*ncoeff*nexp+2*i],
+                                      coeff[2*ncoeff*nexp+2*i+1]);
+            offset *= it->second->getPixelSize();
+            it->second->shiftCenter(afw::cameraGeom::FpExtent(offset));
 	    }
 	}
 
@@ -3060,17 +3277,23 @@ lsst::meas::mosaic::solveMosaic_CCD_shot(int order,
 	    matchVec[i]->setFitVal(coeffVec[matchVec[i]->iexp], p);
 	}
 
+    if (writeSnapshots) {
+        writeObsVec((snapshotPath / (boost::format("match-iter-%d.fits") % k).str()).native(), matchVec);
+    }
+
 	delete [] coeff;
 
 	double chi2 = calcChi2(matchVec, coeffVec, p);
 	printf("calcChi2: %e\n", chi2);
 	double e2 = chi2 / matchVec.size();
-	flagObj2(matchVec, coeffVec, p, 3.0*e2);
+	flagObj2(matchVec, coeffVec, p, 9.0, catRMS);
     }
 
-    std::vector<Eigen::Matrix2d> cd(nexp);
-    for (int i = 0; i < nexp; i++) {
-	cd[i] << coeffVec[i]->a[0], coeffVec[i]->a[1], coeffVec[i]->b[0], coeffVec[i]->b[1];
+    std::map<ExpType, Eigen::Matrix2d> cd;
+    for (CoeffSet::iterator it = coeffVec.begin(); it != coeffVec.end(); it++) {
+	Eigen::Matrix2d c;
+	c << it->second->a[0], it->second->a[1], it->second->b[0], it->second->b[1];
+	cd.insert(std::map<ExpType, Eigen::Matrix2d>::value_type(it->first, c));
     }
     for (int i = 0; i < nMobs; i++) {
 	double CD1_1 = cd[matchVec[i]->iexp](0,0);
@@ -3082,18 +3305,18 @@ lsst::meas::mosaic::solveMosaic_CCD_shot(int order,
 	matchVec[i]->V = (-matchVec[i]->xi * CD2_1 + matchVec[i]->eta * CD1_1) / det;
     }
 
-    for (int i = 0; i < nexp; i++) {
+    for (CoeffSet::iterator it = coeffVec.begin(); it != coeffVec.end(); it++) {
 	std::vector<Obs::Ptr> obsVec_sub;
 	for (size_t j = 0; j < matchVec.size(); j++) {
 	    Obs::Ptr iobs = matchVec[j];
-	    if (iobs->iexp == i) {
+	    if (iobs->iexp == it->first) {
 		obsVec_sub.push_back(iobs);
 	    }
 	}
 	double *a = solveSIP_P(p, obsVec_sub);
 	for (int k = 0; k < p->ncoeff; k++) {
-	    coeffVec[i]->ap[k] = a[k];
-	    coeffVec[i]->bp[k] = a[k+p->ncoeff];
+	    it->second->ap[k] = a[k];
+	    it->second->bp[k] = a[k+p->ncoeff];
 	}
 	delete [] a;
     }
@@ -3101,10 +3324,10 @@ lsst::meas::mosaic::solveMosaic_CCD_shot(int order,
     printf("fluxFit ...\n");
     if (ffp->absolute) {
 	ObsVec sourceVec;
-	fluxFitAbsolute(matchVec, nmatch, sourceVec, 0, coeffVec, nchip, fscale, ffp);
+	fluxFitAbsolute(matchVec, nmatch, sourceVec, 0, wcsDic, ccdSet, fexp, fchip, ffp);
     } else {
 	ObsVec sourceVec;
-	fluxFitRelative(matchVec, nmatch, sourceVec, 0, coeffVec, nchip, fscale, ffp);
+	fluxFitRelative(matchVec, nmatch, sourceVec, 0, wcsDic, ccdSet, fexp, fchip, ffp);
     }
 
     for (int i = 0; i < nMobs; i++) {
@@ -3116,18 +3339,25 @@ lsst::meas::mosaic::solveMosaic_CCD_shot(int order,
 
 CoeffSet
 lsst::meas::mosaic::solveMosaic_CCD(int order,
-				   int nmatch,
-				   int nsource,
-				   ObsVec &matchVec,
-				   ObsVec &sourceVec,
-				   WcsDic &wcsDic,
-				   CcdSet &ccdSet,
-				   FluxFitParams::Ptr &ffp,
-				   std::vector<double> &fscale,
-				   bool solveCcd,
-				   bool allowRotation,
-				   bool verbose)
+				    int nmatch,
+				    int nsource,
+				    ObsVec &matchVec,
+				    ObsVec &sourceVec,
+				    WcsDic &wcsDic,
+				    CcdSet &ccdSet,
+				    FluxFitParams::Ptr &ffp,
+				    std::map<ExpType, float> &fexp,
+				    std::map<ChipType, float> &fchip,
+				    bool solveCcd,
+				    bool allowRotation,
+				    bool verbose,
+				    double catRMS,
+                    bool writeSnapshots,
+                    std::string const & snapshotDir
+)
 {
+    boost::filesystem::path snapshotPath(snapshotDir);
+
     Poly::Ptr p = Poly::Ptr(new Poly(order));
 
     int nMobs = matchVec.size();
@@ -3138,12 +3368,17 @@ lsst::meas::mosaic::solveMosaic_CCD(int order,
     int ncoeff = p->ncoeff;
     int nstar = nsource;
 
+    if (writeSnapshots) {
+        writeObsVec((snapshotPath / "match-initial-0.fits").native(), matchVec);
+        writeObsVec((snapshotPath / "source-initial-0.fits").native(), sourceVec);
+    }
+
     // Solve for polynomial coefficients and crvals
     // for each exposure separately
     // These values will be used as initial guess for
     // the subsequent fitting
 
-    std::vector<Coeff::Ptr> coeffVec = initialFit(nexp, matchVec, wcsDic, ccdSet, p);
+    CoeffSet coeffVec = initialFit(nexp, matchVec, wcsDic, ccdSet, p);
 
     // Update (xi, eta) and (u, v) using initial fitting resutls
     for (int i = 0; i < nMobs; i++) {
@@ -3163,6 +3398,11 @@ lsst::meas::mosaic::solveMosaic_CCD(int order,
 	sourceVec[i]->setFitVal(coeffVec[sourceVec[i]->iexp], p);
     }
 
+    if (writeSnapshots) {
+        writeObsVec((snapshotPath / "match-initial-1.fits").native(), matchVec);
+        writeObsVec((snapshotPath / "source-initial-1.fits").native(), sourceVec);
+    }
+
     printf("Before fitting calcChi2: %e %e\n",
 	   calcChi2(matchVec, coeffVec, p),
 	   calcChi2_Star(matchVec, sourceVec, coeffVec, p));
@@ -3172,36 +3412,37 @@ lsst::meas::mosaic::solveMosaic_CCD(int order,
 
     double *coeff;
     for (int k = 0; k < 3; k++) {
-	coeff = solveLinApprox_Star(matchVec, sourceVec, nstar, coeffVec, nchip, p, solveCcd, allowRotation);
+	coeff = solveLinApprox_Star(matchVec, sourceVec, nstar, coeffVec, nchip, p, solveCcd, allowRotation, catRMS);
 
-	for (int j = 0; j < nexp; j++) {
+	int j = 0;
+	for (CoeffSet::iterator it = coeffVec.begin(); it != coeffVec.end(); it++, j++) {
 	    for (int i = 0; i < ncoeff; i++) {
-		coeffVec[j]->a[i] += coeff[2*ncoeff*j+i];
-		coeffVec[j]->b[i] += coeff[2*ncoeff*j+i+ncoeff];
+		it->second->a[i] += coeff[2*ncoeff*j+i];
+		it->second->b[i] += coeff[2*ncoeff*j+i+ncoeff];
 	    }
 	}
 
 	if (allowRotation) {
-	    for (int i = 0; i < nchip; i++) {
-		lsst::afw::geom::PointD center = ccdSet[i]->getCenter().getPixels(1.0);
-		lsst::afw::geom::PointD offset =
-		    lsst::afw::geom::Point2D(center[0]+coeff[2*ncoeff*nexp+3*i],
-					     center[1]+coeff[2*ncoeff*nexp+3*i+1]);
-		ccdSet[i]->setCenter(lsst::afw::cameraGeom::FpPoint(offset));
-		lsst::afw::cameraGeom::Orientation o = ccdSet[i]->getOrientation();
-		lsst::afw::cameraGeom::Orientation o2(o.getNQuarter(),
-						      o.getPitch(),
-						      o.getRoll(),
-						      o.getYaw() + coeff[2*ncoeff*nexp+3*i+2] * lsst::afw::geom::radians);
-		ccdSet[i]->setOrientation(o2);
+	    int i = 0;
+	    for (CcdSet::iterator it = ccdSet.begin(); it != ccdSet.end(); it++, i++) {
+            afw::geom::Extent2D offset(coeff[2*ncoeff*nexp+3*i],
+                                      coeff[2*ncoeff*nexp+3*i+1]);
+            offset *= it->second->getPixelSize();
+            it->second->shiftCenter(afw::cameraGeom::FpExtent(offset));
+            afw::cameraGeom::Orientation o = it->second->getOrientation();
+            afw::cameraGeom::Orientation o2(o.getNQuarter(),
+                                            o.getPitch(),
+                                            o.getRoll(),
+                                            o.getYaw() + coeff[2*ncoeff*nexp+3*i+2] * afw::geom::radians);
+            it->second->setOrientation(o2);
 	    }
 	} else {
-	    for (int i = 0; i < nchip; i++) {
-		lsst::afw::geom::PointD center = ccdSet[i]->getCenter().getPixels(1.0);
-		lsst::afw::geom::PointD offset =
-		    lsst::afw::geom::Point2D(center[0]+coeff[2*ncoeff*nexp+2*i],
-					     center[1]+coeff[2*ncoeff*nexp+2*i+1]);
-		ccdSet[i]->setCenter(lsst::afw::cameraGeom::FpPoint(offset));
+	    int i = 0;
+	    for (CcdSet::iterator it = ccdSet.begin(); it != ccdSet.end(); it++, i++) {
+            afw::geom::Extent2D offset(coeff[2*ncoeff*nexp+2*i],
+                                      coeff[2*ncoeff*nexp+2*i+1]);
+            offset *= it->second->getPixelSize();
+            it->second->shiftCenter(afw::cameraGeom::FpExtent(offset));
 	    }
 	}
 
@@ -3233,6 +3474,11 @@ lsst::meas::mosaic::solveMosaic_CCD(int order,
 	    }
 	}
 
+    if (writeSnapshots) {
+        writeObsVec((snapshotPath / (boost::format("match-iter-%d.fits") % k).str()).native(), matchVec);
+        writeObsVec((snapshotPath / (boost::format("source-iter-%d.fits") % k).str()).native(), sourceVec);
+    }
+
 	delete [] coeff;
 
 	double chi2 = calcChi2_Star(matchVec, sourceVec, coeffVec, p);
@@ -3244,13 +3490,17 @@ lsst::meas::mosaic::solveMosaic_CCD(int order,
 	///double e2 = chi2 / (matchVec.size() + sourceVec.size());
 	//flagObj2(matchVec, coeffVec, p, 9.0*e2);
 	//flagObj2(sourceVec, coeffVec, p, 9.0*e2);
-	flagObj2(matchVec, coeffVec, p, 9.0*calcChi2(matchVec, coeffVec, p, true));
-	flagObj2(sourceVec, coeffVec, p, 9.0*calcChi2(sourceVec, coeffVec, p, true));
+	//flagObj2(matchVec, coeffVec, p, 9.0*calcChi2(matchVec, coeffVec, p, true));
+	//flagObj2(sourceVec, coeffVec, p, 9.0*calcChi2(sourceVec, coeffVec, p, true));
+	flagObj2(matchVec, coeffVec, p, 9.0, catRMS);
+	flagObj2(sourceVec, coeffVec, p, 9.0);
     }
 
-    std::vector<Eigen::Matrix2d> cd(nexp);
-    for (int i = 0; i < nexp; i++) {
-	cd[i] << coeffVec[i]->a[0], coeffVec[i]->a[1], coeffVec[i]->b[0], coeffVec[i]->b[1];
+    std::map<ExpType, Eigen::Matrix2d> cd;
+    for (CoeffSet::iterator it = coeffVec.begin(); it != coeffVec.end(); it++) {
+	Eigen::Matrix2d c;
+	c << it->second->a[0], it->second->a[1], it->second->b[0], it->second->b[1];
+	cd.insert(std::map<ExpType, Eigen::Matrix2d>::value_type(it->first, c));
     }
     for (int i = 0; i < nMobs; i++) {
 	double CD1_1 = cd[matchVec[i]->iexp](0,0);
@@ -3271,33 +3521,33 @@ lsst::meas::mosaic::solveMosaic_CCD(int order,
 	sourceVec[i]->V = (-sourceVec[i]->xi * CD2_1 + sourceVec[i]->eta * CD1_1) / det;
     }
 
-    for (int i = 0; i < nexp; i++) {
+    for (CoeffSet::iterator it = coeffVec.begin(); it != coeffVec.end(); it++) {
 	std::vector<Obs::Ptr> obsVec_sub;
 	for (size_t j = 0; j < matchVec.size(); j++) {
 	    Obs::Ptr iobs = matchVec[j];
-	    if (iobs->iexp == i) {
+	    if (iobs->iexp == it->first) {
 		obsVec_sub.push_back(iobs);
 	    }
 	}
 	for (size_t j = 0; j < sourceVec.size(); j++) {
 	    Obs::Ptr iobs = sourceVec[j];
-	    if (iobs->iexp == i) {
+	    if (iobs->iexp == it->first) {
 		obsVec_sub.push_back(iobs);
 	    }
 	}
 	double *a = solveSIP_P(p, obsVec_sub);
 	for (int k = 0; k < p->ncoeff; k++) {
-	    coeffVec[i]->ap[k] = a[k];
-	    coeffVec[i]->bp[k] = a[k+p->ncoeff];
+	    it->second->ap[k] = a[k];
+	    it->second->bp[k] = a[k+p->ncoeff];
 	}
 	delete [] a;
     }
 
     printf("fluxFit ...\n");
     if (ffp->absolute) {
-	fluxFitAbsolute(matchVec, nmatch, sourceVec, nsource, coeffVec, nchip, fscale, ffp);
+	fluxFitAbsolute(matchVec, nmatch, sourceVec, nsource, wcsDic, ccdSet, fexp, fchip, ffp);
     } else {
-	fluxFitRelative(matchVec, nmatch, sourceVec, nsource, coeffVec, nchip, fscale, ffp);
+	fluxFitRelative(matchVec, nmatch, sourceVec, nsource, wcsDic, ccdSet, fexp, fchip, ffp);
     }
 
     for (int i = 0; i < nMobs; i++) {
@@ -3361,7 +3611,7 @@ lsst::meas::mosaic::convertCoeff(Coeff::Ptr& coeff, lsst::afw::cameraGeom::Ccd::
 	}
     }
 
-    lsst::afw::geom::PointD off = ccd->getCenter().getPixels(1.0);
+    afw::geom::Extent2D off = ccd->getCenter().getPixels(ccd->getPixelSize()) - ccd->getCenterPixel();
     newC->x0 =  (off[0] + coeff->x0) * cosYaw + (off[1] + coeff->y0) * sinYaw;
     newC->y0 = -(off[0] + coeff->x0) * sinYaw + (off[1] + coeff->y0) * cosYaw;
 
@@ -3458,7 +3708,7 @@ lsst::meas::mosaic::convertFluxFitParams(Coeff::Ptr& coeff, lsst::afw::cameraGeo
 	}
     }
 
-    lsst::afw::geom::PointD off = ccd->getCenter().getPixels(1.0);
+    afw::geom::Extent2D off = ccd->getCenter().getPixels(ccd->getPixelSize()) - ccd->getCenterPixel();
     newP->x0 =  (off[0] + coeff->x0) * cosYaw + (off[1] + coeff->y0) * sinYaw;
     newP->y0 = -(off[0] + coeff->x0) * sinYaw + (off[1] + coeff->y0) * cosYaw;
 
@@ -3652,11 +3902,6 @@ lsst::meas::mosaic::getJImg(Coeff::Ptr& coeff,
 
     lsst::afw::image::Image<float>::Ptr img(new lsst::afw::image::Image<float>(width, height));
 
-    lsst::afw::geom::PointD  center = ccd->getCenter().getPixels(1.0);
-    lsst::afw::cameraGeom::Orientation ori = ccd->getOrientation();
-    double cosYaw = ori.getCosYaw();
-    double sinYaw = ori.getSinYaw();
-
     double *vals = new double[width];
 
     int interpLength = 100;
@@ -3671,12 +3916,14 @@ lsst::meas::mosaic::getJImg(Coeff::Ptr& coeff,
 		interval = xend - x + 1;
 	    }
 
-	    double u = x * cosYaw - y * sinYaw + center[0] + coeff->x0;
-	    double v = x * sinYaw + y * cosYaw + center[1] + coeff->y0;
-	    double val0 = coeff->detJ(u, v) * deg2pix * deg2pix;
-	    u = xend * cosYaw - y * sinYaw + center[0] + coeff->x0;
-	    v = xend * sinYaw + y * cosYaw + center[1] + coeff->y0;
-	    double val1 = coeff->detJ(u, v) * deg2pix * deg2pix;
+        afw::geom::Point2D uv 
+            = ccd->getPositionFromPixel(afw::geom::Point2D(x, y)).getPixels(ccd->getPixelSize())
+            + afw::geom::Extent2D(coeff->x0, coeff->y0);
+	    double val0 = coeff->detJ(uv.getX(), uv.getY()) * deg2pix * deg2pix;
+
+        uv = ccd->getPositionFromPixel(afw::geom::Point2D(xend, y)).getPixels(ccd->getPixelSize())
+            + afw::geom::Extent2D(coeff->x0, coeff->y0);
+	    double val1 = coeff->detJ(uv.getX(), uv.getY()) * deg2pix * deg2pix;
 
 	    for (int i = 0; i < interval; i++) {
 		vals[x+i] = val0 + (val1 - val0) / interval * i;
@@ -3766,11 +4013,6 @@ lsst::meas::mosaic::getFCorImg(FluxFitParams::Ptr& p,
 
     lsst::afw::image::Image<float>::Ptr img(new lsst::afw::image::Image<float>(width, height));
 
-    lsst::afw::geom::PointD  center = ccd->getCenter().getPixels(1.0);
-    lsst::afw::cameraGeom::Orientation ori = ccd->getOrientation();
-    double cosYaw = ori.getCosYaw();
-    double sinYaw = ori.getSinYaw();
-
     double *vals = new double[width];
 
     int interpLength = 100;
@@ -3785,12 +4027,14 @@ lsst::meas::mosaic::getFCorImg(FluxFitParams::Ptr& p,
 		interval = xend - x + 1;
 	    }
 
-	    double u = x * cosYaw - y * sinYaw + center[0] + coeff->x0;
-	    double v = x * sinYaw + y * cosYaw + center[1] + coeff->y0;
-	    double val0 = p->eval(u, v);
-	    u = xend * cosYaw - y * sinYaw + center[0] + coeff->x0;
-	    v = xend * sinYaw + y * cosYaw + center[1] + coeff->y0;
-	    double val1 = p->eval(u, v);
+        afw::geom::Point2D uv 
+            = ccd->getPositionFromPixel(afw::geom::Point2D(x, y)).getPixels(ccd->getPixelSize())
+            + afw::geom::Extent2D(coeff->x0, coeff->y0);
+	    double val0 = p->eval(uv.getX(), uv.getY());
+        uv = ccd->getPositionFromPixel(afw::geom::Point2D(xend, y)).getPixels(ccd->getPixelSize())
+            + afw::geom::Extent2D(coeff->x0, coeff->y0);
+	    double val1 = p->eval(uv.getX(), uv.getY());
+
 	    for (int i = 0; i < interval; i++) {
 		vals[x+i] = val0 + (val1 - val0) / interval * i;
 	    }

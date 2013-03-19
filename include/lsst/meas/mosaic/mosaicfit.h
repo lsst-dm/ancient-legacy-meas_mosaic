@@ -14,20 +14,23 @@ namespace lsst {
     namespace meas {
 	namespace mosaic {
 
+            typedef boost::int64_t IdType;
+            typedef boost::int32_t ChipType;
+            typedef boost::int64_t ExpType;
+
             class Source {
             public:
                 enum { UNSET = -1 };
-                typedef long IdType;
-                typedef int ChipType;
-                typedef int ExpType;
                 explicit Source(lsst::afw::table::SourceRecord const& record) :
                     _id(record.getId()), _chip(UNSET), _exp(UNSET), _sky(record.getRa(), record.getDec()),
-                    _pixels(record.getX(), record.getY()), _flux(record.getPsfFlux()),
-                    _astromBad(record.getCentroidFlag() | record.getPsfFluxFlag()) {}
+                    _pixels(record.getX(), record.getY()), _flux(record.getApFlux()), _err(record.getApFluxErr()),
+		    _xerr(sqrt(record.getCentroidErr()(0,0))), _yerr(sqrt(record.getCentroidErr()(1,1))),
+                    _astromBad(record.getCentroidFlag() | record.getApFluxFlag()) {}
                 Source(lsst::afw::table::SimpleRecord const& record, lsst::afw::image::Wcs const& wcs) :
                     _id(record.getId()), _chip(UNSET), _exp(UNSET), _sky(record.getRa(), record.getDec()),
                     _pixels(wcs.skyToPixel(_sky)),
                     _flux(record.get(record.getSchema().find<double>("flux").key)),
+                    _err(record.get(record.getSchema().find<double>("flux.err").key)),
                     _astromBad(!lsst::utils::isfinite(_flux)) {}
                 Source(lsst::afw::coord::Coord coord, double flux=std::numeric_limits<double>::quiet_NaN()) :
                     _id(-1), _chip(UNSET), _exp(UNSET), _sky(coord),
@@ -44,7 +47,10 @@ namespace lsst {
                 lsst::afw::geom::Point2D getPixels() const { return _pixels; }
                 double getX() const { return getPixels().getX(); }
                 double getY() const { return getPixels().getY(); }
+		double getXErr() const { return _xerr; }
+		double getYErr() const { return _yerr; }
                 double getFlux() const { return _flux; }
+                double getFluxErr() const { return _err; }
                 bool getAstromBad() const { return _astromBad; }
 
                 void setChip(ChipType chip) { _chip = chip; }
@@ -57,6 +63,9 @@ namespace lsst {
                 lsst::afw::coord::Coord _sky;     // Sky coordinates
                 lsst::afw::geom::Point2D _pixels; // Pixel coordinates
                 double _flux;                     // Flux
+                double _err;			  // Flux Err
+		double _xerr;			  // x coordinate error
+		double _yerr;			  // y coordinate error
                 bool _astromBad;                  // Astrometry bad?
             };
 
@@ -67,7 +76,7 @@ namespace lsst {
             typedef std::vector<SourceMatch> SourceMatchSet;
 	    typedef std::vector<std::vector<SourceMatch> > SourceMatchGroup;
 
-	    typedef std::map<int, lsst::afw::image::Wcs::Ptr> WcsDic;
+	    typedef std::map<ExpType, lsst::afw::image::Wcs::Ptr> WcsDic;
 
 	    class Poly {
 	    public:
@@ -91,7 +100,7 @@ namespace lsst {
 		typedef boost::shared_ptr<Coeff> Ptr;
 
 		Poly::Ptr p;
-		int iexp;
+		ExpType iexp;
 		double *a;
 		double *b;
 		double *ap;
@@ -131,12 +140,12 @@ namespace lsst {
 		void set_A(double v) { A = v; }
 		void set_x0(double v) { x0 = v; }
 		void set_y0(double v) { y0 = v; }
-		void set_iexp(int v) { iexp = v; }
+		void set_iexp(ExpType v) { iexp = v; }
 		double get_D() { return D; }
 		double get_A() { return A; }
 		double get_x0() { return x0; }
 		double get_y0() { return y0; }
-		int get_iexp() { return iexp; }
+		ExpType get_iexp() { return iexp; }
 	    };
 
 	    class Obs {
@@ -160,16 +169,23 @@ namespace lsst {
 		int id;
 		int istar;
 		int jstar;	/* index for fit */
-		int iexp;
-		int ichip;
+		ExpType iexp;	/* exposure id or visit number */
+		ChipType ichip;	/* ccdId */
+		int jexp;	/* sequential index for exposure used for matrix*/
+		int jchip;	/* sequential index for ccd used for matrix*/
 		bool good;
+
+		double xerr;
+		double yerr;
 
 		double mag;
 		double mag0;
+		double err;
 		double mag_cat;
+		double err_cat;
 
-		Obs(int id, double ra, double dec, double x, double y, int ichip, int iexp);
-		Obs(int id, double ra, double dec, int ichip, int iexp);
+		Obs(int id, double ra, double dec, double x, double y, ChipType ichip, ExpType iexp);
+		Obs(int id, double ra, double dec, ChipType ichip, ExpType iexp);
 		void setUV(lsst::afw::cameraGeom::Ccd::Ptr const &ccd, double x0=0, double y0=0);
 		void setXiEta(double ra_c, double dec_c);
 		void setFitVal(Coeff::Ptr& c, Poly::Ptr p);
@@ -250,14 +266,14 @@ namespace lsst {
 		int getIndex(int i, int j);
 	    };
 
-	    typedef std::vector<lsst::afw::cameraGeom::Ccd::Ptr> CcdSet;
-	    typedef std::vector<Coeff::Ptr> CoeffSet;
+	    typedef std::map<ChipType, lsst::afw::cameraGeom::Ccd::Ptr> CcdSet;
+	    typedef std::map<ExpType, Coeff::Ptr> CoeffSet;
 	    typedef std::vector<Obs::Ptr> ObsVec;
 
 	    KDTree::Ptr kdtreeMat(SourceMatchGroup &matchList);
 	    KDTree::Ptr kdtreeSource(SourceGroup const &sourceSet,
 				     KDTree::Ptr rootMat,
-				     int nchip,
+				     CcdSet &ccdSet,
 				     lsst::afw::geom::Angle d_lim, unsigned int nbrightest);
 
 	    ObsVec obsVecFromSourceGroup(SourceGroup const &all,
@@ -270,10 +286,14 @@ namespace lsst {
 					  WcsDic &wcsDic,
 					  CcdSet &ccdSet,
 					  FluxFitParams::Ptr &ffp,
-					  std::vector<double> &fscale,
+					  std::map<ExpType, float> &fexp,
+					  std::map<ChipType, float> &fchip,
 					  bool solveCcd = true,
 					  bool allowRotation = true,
-					  bool verbose = false);
+					  bool verbose = false,
+					  double catRMS = 0.0,
+                                          bool writeSnapshots = false,
+                                          std::string const & snapshotDir = ".");
 
 	    CoeffSet solveMosaic_CCD(int order,
 				     int nmatch,
@@ -283,10 +303,14 @@ namespace lsst {
 				     WcsDic &wcsDic,
 				     CcdSet &ccdSet,
 				     FluxFitParams::Ptr &ffp,
-				     std::vector<double> &fscale,
+				     std::map<ExpType, float> &fexp,
+				     std::map<ChipType, float> &fchip,
 				     bool solveCcd = true,
 				     bool allowRotation = true,
-				     bool verbose = false);
+				     bool verbose = false,
+				     double catRMS = 0.0,
+                                     bool writeSnapshots = false,
+                                     std::string const & snapshotDir = ".");
 
 	    Coeff::Ptr convertCoeff(Coeff::Ptr& coeff,
 				    lsst::afw::cameraGeom::Ccd::Ptr& ccd);

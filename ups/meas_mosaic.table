@@ -1,4 +1,10 @@
-setupRequired(ip_diffim)
+setupRequired(afw)
+setupRequired(numpy)
+setupRequired(pex_config)
+setupRequired(pipe_base)
+setupRequired(meas_astrom)
+setupRequired(minuit2)
+
 setupOptional(mkl)
 
 envPrepend(LD_LIBRARY_PATH, ${PRODUCT_DIR}/lib)
