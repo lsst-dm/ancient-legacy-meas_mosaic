@@ -1034,7 +1034,7 @@ class MosaicTask(pipeBase.CmdLineTask):
         self.ffp = ffp
         self.fexp = fexp
         self.fchip = fchip
-
+        self.writeNewWcs()
         self.writeFcr()
 
         if self.config.outputDiag:
