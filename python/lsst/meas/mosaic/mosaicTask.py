@@ -117,7 +117,7 @@ class MosaicTask(pipeBase.CmdLineTask):
 
     #  This code transforms a frameId (visit number) and ccdId (non-sequential) into a dataId
     def getDataId(self, butler, frameId, ccdId):
-        dataId = butler.mapper._getDataId(frameId, ccdId)
+        dataId = butler.mapper.getDataId(frameId, ccdId)
         return dataId
 
     def readCcd(self, camera, ccdIds):
