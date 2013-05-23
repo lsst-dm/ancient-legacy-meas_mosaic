@@ -14,9 +14,9 @@ namespace lsst {
     namespace meas {
 	namespace mosaic {
 
-            typedef boost::int64_t IdType;
+            typedef boost::int32_t IdType;
             typedef boost::int32_t ChipType;
-            typedef boost::int64_t ExpType;
+            typedef boost::int32_t ExpType;
 
             class Source {
             public:
