@@ -348,6 +348,9 @@ namespace lsst {
 	      getFCorImg(FluxFitParams::Ptr& p, int width, int height);
 
 	    lsst::afw::image::Image<float>::Ptr
+	      getFCorImg(FluxFitParams::Ptr& p, lsst::afw::geom::Box2I const & bbox);
+
+	    lsst::afw::image::Image<float>::Ptr
 	      getFCorImg(FluxFitParams::Ptr& p,
 			 lsst::afw::cameraGeom::Ccd::Ptr& ccd);
 

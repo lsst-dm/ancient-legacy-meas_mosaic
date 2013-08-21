@@ -4099,6 +4099,50 @@ lsst::meas::mosaic::getFCorImg(FluxFitParams::Ptr& p, int width, int height)
 }
 
 lsst::afw::image::Image<float>::Ptr
+lsst::meas::mosaic::getFCorImg(FluxFitParams::Ptr& p, lsst::afw::geom::Box2I const & bbox)
+{
+    lsst::afw::image::Image<float>::Ptr img(new lsst::afw::image::Image<float>(bbox));
+
+    double *vals = new double[bbox.getWidth()];
+
+    int interpLength = 100;
+
+    for (int y = 0; y != bbox.getHeight(); y++) {
+
+        for (int x = 0; x < bbox.getWidth() + interpLength; x+= interpLength) {
+            int interval = interpLength;
+            int xend = x + interval - 1;
+            if (xend >= bbox.getWidth()) {
+                xend = bbox.getWidth() - 1;
+                interval = xend - x + 1;
+            }
+
+            double u = x + bbox.getBeginX();
+            double v = y + bbox.getBeginY();
+            double val0 = p->eval(u, v);
+            u = xend + bbox.getBeginX();
+            v = y + bbox.getBeginY();
+            double val1 = p->eval(u, v);
+            for (int i = 0; i < interval; i++) {
+                vals[x+i] = val0 + (val1 - val0) / interval * i;
+            }
+        }
+
+	lsst::afw::image::Image<float>::x_iterator begin = img->row_begin(y);
+	lsst::afw::image::Image<float>::x_iterator end   = img->row_end(y);
+
+	for (lsst::afw::image::Image<float>::x_iterator ptr = begin; ptr != end; ptr++) {
+
+	    int x = ptr - begin;
+
+	    *ptr = pow(10., -0.4*vals[x]);
+	}
+    }
+
+    return img;
+}
+
+lsst::afw::image::Image<float>::Ptr
 lsst::meas::mosaic::getFCorImg(FluxFitParams::Ptr& p,
 			      lsst::afw::cameraGeom::Ccd::Ptr& ccd)
 {
