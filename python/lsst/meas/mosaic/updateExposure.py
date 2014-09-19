@@ -10,7 +10,7 @@ def applyMosaicResults(dataRef, calexp=None, bbox=None):
     """
     if bbox is not None:
         if calexp is None:
-            calexp = dataRef.get("calexp_sub", bbox=bbox, origin='PARENT', immediate=True)
+            calexp = dataRef.get("calexp_sub", bbox=bbox, immediate=True)
     if calexp is None:
         calexp = dataRef.get("calexp", immediate=True)
     wcs_md = dataRef.get("wcs_md", immediate=True)
