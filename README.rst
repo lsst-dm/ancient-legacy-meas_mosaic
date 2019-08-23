@@ -2,7 +2,7 @@
 meas_mosaic
 ###########
 
-This is an abandoned version of meas_mosaic. See the `LSST Organization`_ for the `current version`_.
+This is an abandoned version of meas_mosaic.
+See the `legacy-meas_mosaic`_ package for the most recent version used by LSST, but not that even that is now obsolete.
 
-.. _LSST Organization: https://github.com/lsst/
-.. _current version: https://github.com/lsst/meas_mosaic
+.. _current version: https://github.com/lsst-dm/legacy-meas_mosaic
